@@ -303,6 +303,232 @@
   }
 }
 
+.talacher-upload-queue {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  width: min(390px, calc(100vw - 36px));
+  max-height: min(540px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 54px rgba(15, 23, 42, 0.26);
+}
+
+.talacher-upload-queue[hidden] {
+  display: none;
+}
+
+.talacher-queue-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px;
+  border-bottom: 1px solid #e2e7f0;
+}
+
+.talacher-queue-toggle,
+.talacher-queue-clear {
+  border: 0;
+  background: transparent;
+  color: #172033;
+  font: inherit;
+  cursor: pointer;
+}
+
+.talacher-queue-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px;
+  text-align: left;
+}
+
+.talacher-queue-toggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #596275;
+  border-bottom: 2px solid #596275;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 140ms ease;
+}
+
+.talacher-upload-queue-collapsed .talacher-queue-toggle::before {
+  transform: rotate(-45deg) translateY(1px);
+}
+
+.talacher-queue-toggle span {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.talacher-queue-toggle strong {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #edf4ff;
+  color: #0073ea;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.talacher-queue-clear {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 5px;
+  color: #596275;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.talacher-queue-clear:hover:not(:disabled) {
+  background: #f3f6fb;
+  color: #172033;
+}
+
+.talacher-queue-clear:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.talacher-queue-body {
+  max-height: min(492px, calc(100vh - 98px));
+  overflow: auto;
+}
+
+.talacher-upload-queue-collapsed .talacher-queue-body {
+  display: none;
+}
+
+.talacher-queue-list {
+  display: grid;
+}
+
+.talacher-queue-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-top: 1px solid #eef2f7;
+}
+
+.talacher-queue-item:first-child {
+  border-top: 0;
+}
+
+.talacher-queue-thumb {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid #dce2ec;
+  border-radius: 6px;
+  background: #f5f7fb;
+  color: #687386;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.talacher-queue-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.talacher-queue-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.talacher-queue-copy strong {
+  overflow: hidden;
+  color: #172033;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.talacher-queue-copy p {
+  margin: 0;
+  color: #596275;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.talacher-queue-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8edf5;
+}
+
+.talacher-queue-progress span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: #0073ea;
+  transition: width 180ms ease;
+}
+
+.talacher-queue-item-indeterminate .talacher-queue-progress span {
+  width: 44%;
+  animation: talacher-progress-slide 1.05s ease-in-out infinite;
+}
+
+.talacher-queue-cancel {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cfd6e4;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #1d2433;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.talacher-queue-cancel:hover:not(:disabled) {
+  background: #f7f8fb;
+  border-color: #99a7bd;
+}
+
+.talacher-queue-cancel:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.talacher-queue-item-done .talacher-queue-progress span {
+  background: #13a76b;
+}
+
+.talacher-queue-item-error .talacher-queue-progress span,
+.talacher-queue-item-cancelled .talacher-queue-progress span {
+  background: #df2f4a;
+}
+
+.talacher-queue-item-error .talacher-queue-copy p,
+.talacher-queue-item-cancelled .talacher-queue-copy p {
+  color: #b4233c;
+}
+
 @media (max-width: 720px) {
   .talacher-send-layout {
     grid-template-columns: 1fr;

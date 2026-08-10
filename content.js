@@ -28,6 +28,7 @@ function initializeMiroTestAction() {
   const menuAction = createMiroMenuAction(() => dialog.open({ preferClipboard: true }));
   const toolbarAction = createMiroToolbarAction(dialog.open);
   document.documentElement.append(dialog.element);
+  document.documentElement.append(dialog.queueElement);
   document.documentElement.append(dialog.toastElement);
   document.documentElement.append(fallback);
 
@@ -280,15 +281,11 @@ function createMiroSendDialog(getSelectedImage) {
   const progressLabel = dialog.querySelector("[data-talacher-progress-label]");
   const firstTitle = form.elements.firstTitle;
   const submitButton = form.querySelector("button[type='submit']");
-  const cancelButton = form.querySelector("[data-talacher-cancel]");
   const groupSelect = form.querySelector("[data-talacher-group-select]");
   const groupKicker = dialog.querySelector(".talacher-dialog-kicker");
   const preview = dialog.querySelector("[data-talacher-preview]");
   const previewImage = dialog.querySelector("[data-talacher-preview-image]");
   const previewCaption = dialog.querySelector("[data-talacher-preview-caption]");
-  let activeRequestId = null;
-  let isSubmitting = false;
-  let cancelRequested = false;
   let submitWithShift = false;
 
   const close = () => {
@@ -304,6 +301,7 @@ function createMiroSendDialog(getSelectedImage) {
       toast.hidden = true;
     }, 3200);
   };
+  const uploadQueue = createMiroUploadQueue(showToast);
 
   const saveReadyTag = async (options = {}) => {
     setProgress("Saving ready tag...", 28, true);
@@ -384,67 +382,25 @@ function createMiroSendDialog(getSelectedImage) {
     const payload = Object.fromEntries(new FormData(form).entries());
     const isDevSuccess = submitWithShift;
     submitWithShift = false;
-    activeRequestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-${Date.now()}`;
-    isSubmitting = true;
-    cancelRequested = false;
-    submitButton.disabled = true;
-    cancelButton.textContent = "Cancel";
-    cancelButton.disabled = false;
-    setProgress(activeSelection?.uploadable
-      ? "Preparing image upload..."
-      : "Creating monday row without an uploadable image...", 24);
+    const noteUpdate = updateSelectedMiroNote(payload)
+      .then((result) => {
+        if (!result.ok && isMissingMiroNoteError(result.error)) {
+          showToast("No post-it note selected. Select the image and note together if you want Talacher to write the titles.");
+        }
 
-    try {
-      payload.image = await prepareMiroImageForUpload(activeSelection);
+        return result;
+      })
+      .catch((error) => ({ ok: false, error: error.message }));
+    const job = uploadQueue.addJob({
+      payload,
+      selection: activeSelection,
+      isDevSuccess,
+      noteUpdate
+    });
 
-      if (isDevSuccess) {
-        setProgress("Dev success route complete.", 100);
-        const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
-        const noteResult = await updateSelectedMiroNote(payload).catch((error) => ({ ok: false, error: error.message }));
-        close();
-        form.reset();
-        showToast(buildSuccessToast("Dev success", {
-          readyTagCopied,
-          noteResult
-        }));
-        return;
-      }
-
-      setProgress(payload.image?.uploadable
-        ? "Creating monday row and uploading image..."
-        : "Creating monday row without an uploadable image...", 52, true);
-      const response = await sendTalacherMessage({
-        type: "TALACHER_CREATE_MONDAY_ITEM",
-        requestId: activeRequestId,
-        payload
-      });
-      setProgress("Done.", 100);
-      close();
-      form.reset();
-      const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
-      const noteResult = await updateSelectedMiroNote(payload).catch((error) => ({ ok: false, error: error.message }));
-      showToast(buildSuccessToast(response.asset?.url
-        ? `Created row and uploaded image: ${response.item.name}`
-        : `Created monday row: ${response.item.name}`, {
-        readyTagCopied,
-        noteResult
-      }));
-    } catch (error) {
-      if (cancelRequested || error.message === "Cancelled.") {
-        close();
-        showToast("Cancelled monday send. A row may exist if monday already created it.");
-      } else {
-        setProgress(error.message, 100);
-        progress.classList.add("talacher-progress-error");
-      }
-    } finally {
-      isSubmitting = false;
-      activeRequestId = null;
-      cancelRequested = false;
-      submitButton.disabled = false;
-      cancelButton.disabled = false;
-      cancelButton.textContent = "Cancel";
-    }
+    close();
+    form.reset();
+    uploadQueue.startJob(job);
   });
 
   function setProgress(label, percent, indeterminate = false) {
@@ -463,26 +419,12 @@ function createMiroSendDialog(getSelectedImage) {
   }
 
   function cancelOrClose() {
-    if (!isSubmitting) {
-      close();
-      return;
-    }
-
-    cancelRequested = true;
-    cancelButton.disabled = true;
-    cancelButton.textContent = "Cancelling...";
-    setProgress("Cancelling monday send...", 82, true);
-
-    if (activeRequestId) {
-      sendTalacherMessage({
-        type: "TALACHER_CANCEL_REQUEST",
-        requestId: activeRequestId
-      }).catch(() => {});
-    }
+    close();
   }
 
   return {
     element: dialog,
+    queueElement: uploadQueue.element,
     toastElement: toast,
     saveReadyTag,
     setSelection(selection) {
@@ -495,6 +437,254 @@ function createMiroSendDialog(getSelectedImage) {
     open,
     close
   };
+}
+
+function createMiroUploadQueue(showToast) {
+  const queue = document.createElement("section");
+  const jobs = new Map();
+  let isCollapsed = false;
+
+  queue.className = "talacher-root talacher-upload-queue";
+  queue.hidden = true;
+  queue.innerHTML = `
+    <header class="talacher-queue-header">
+      <button class="talacher-queue-toggle" type="button" data-talacher-queue-toggle>
+        <span>Talacher queue</span>
+        <strong data-talacher-queue-count>0</strong>
+      </button>
+      <button class="talacher-queue-clear" type="button" data-talacher-queue-clear>Clear done</button>
+    </header>
+    <div class="talacher-queue-body" data-talacher-queue-body>
+      <div class="talacher-queue-list" data-talacher-queue-list></div>
+    </div>
+  `;
+
+  const count = queue.querySelector("[data-talacher-queue-count]");
+  const list = queue.querySelector("[data-talacher-queue-list]");
+  const toggle = queue.querySelector("[data-talacher-queue-toggle]");
+  const clearDone = queue.querySelector("[data-talacher-queue-clear]");
+
+  toggle.addEventListener("click", () => {
+    isCollapsed = !isCollapsed;
+    queue.classList.toggle("talacher-upload-queue-collapsed", isCollapsed);
+  });
+
+  clearDone.addEventListener("click", () => {
+    for (const job of jobs.values()) {
+      if (isTerminalQueueStatus(job.status)) {
+        job.element.remove();
+        jobs.delete(job.id);
+      }
+    }
+
+    refreshQueue();
+  });
+
+  function addJob({ payload, selection, isDevSuccess, noteUpdate }) {
+    const id = crypto.randomUUID ? crypto.randomUUID() : `talacher-job-${Date.now()}-${jobs.size}`;
+    const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-request-${Date.now()}-${jobs.size}`;
+    const previewUrl = selection?.previewUrl || selection?.dataUrl || selection?.sourceUrl || "";
+    const title = formatQueueTitle(payload);
+    const element = document.createElement("article");
+
+    element.className = "talacher-queue-item talacher-queue-item-queued";
+    element.innerHTML = `
+      <div class="talacher-queue-thumb" data-talacher-queue-thumb></div>
+      <div class="talacher-queue-copy">
+        <strong data-talacher-queue-title></strong>
+        <p data-talacher-queue-status>Queued</p>
+        <div class="talacher-queue-progress" aria-hidden="true">
+          <span data-talacher-queue-progress-bar></span>
+        </div>
+      </div>
+      <button class="talacher-queue-cancel" type="button" data-talacher-queue-cancel>Cancel</button>
+    `;
+
+    const thumb = element.querySelector("[data-talacher-queue-thumb]");
+    const titleNode = element.querySelector("[data-talacher-queue-title]");
+    const cancelButton = element.querySelector("[data-talacher-queue-cancel]");
+
+    titleNode.textContent = title;
+
+    if (previewUrl) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = previewUrl;
+      thumb.append(image);
+    } else {
+      thumb.textContent = "No image";
+      thumb.classList.add("talacher-queue-thumb-empty");
+    }
+
+    const job = {
+      id,
+      requestId,
+      payload: { ...payload },
+      selection,
+      isDevSuccess,
+      noteUpdate,
+      noteResult: null,
+      cancelled: false,
+      status: "queued",
+      element,
+      statusNode: element.querySelector("[data-talacher-queue-status]"),
+      progressBar: element.querySelector("[data-talacher-queue-progress-bar]"),
+      cancelButton
+    };
+
+    cancelButton.addEventListener("click", () => cancelJob(job));
+    jobs.set(id, job);
+    list.prepend(element);
+    queue.hidden = false;
+    refreshQueue();
+    updateJob(job, "queued", "Queued", 6);
+    return job;
+  }
+
+  function startJob(job) {
+    runQueueJob(job);
+  }
+
+  async function runQueueJob(job) {
+    try {
+      updateJob(job, "running", job.selection?.uploadable
+        ? "Preparing image upload..."
+        : "Creating monday row without an uploadable image...", 18);
+
+      const image = await prepareMiroImageForUpload(job.selection);
+      throwIfQueueCancelled(job);
+      job.payload.image = image;
+
+      if (job.isDevSuccess) {
+        updateJob(job, "running", "Dev success route...", 58, true);
+        const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
+        throwIfQueueCancelled(job);
+        const noteResult = await resolveQueueNoteUpdate(job);
+        updateJob(job, "done", buildQueueDoneLabel("Dev success", readyTagCopied, noteResult), 100);
+        showToast(buildSuccessToast("Dev success", {
+          readyTagCopied,
+          noteResult
+        }));
+        return;
+      }
+
+      updateJob(job, "running", image?.uploadable
+        ? "Creating monday row and uploading image..."
+        : "Creating monday row...", 52, true);
+      const response = await sendTalacherMessage({
+        type: "TALACHER_CREATE_MONDAY_ITEM",
+        requestId: job.requestId,
+        payload: job.payload
+      });
+      throwIfQueueCancelled(job);
+
+      updateJob(job, "running", "Finalizing Miro board...", 86);
+      const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
+      const noteResult = await resolveQueueNoteUpdate(job);
+      const baseMessage = response.asset?.url
+        ? `Created row and uploaded image: ${response.item.name}`
+        : `Created monday row: ${response.item.name}`;
+
+      updateJob(job, "done", buildQueueDoneLabel(response.item.name, readyTagCopied, noteResult), 100);
+      showToast(buildSuccessToast(baseMessage, {
+        readyTagCopied,
+        noteResult
+      }));
+    } catch (error) {
+      if (job.cancelled || error.message === "Cancelled.") {
+        updateJob(job, "cancelled", "Cancelled. A row may exist if monday already created it.", 100);
+        showToast("Cancelled monday send. A row may exist if monday already created it.");
+        return;
+      }
+
+      updateJob(job, "error", error.message || "Upload failed.", 100);
+    }
+  }
+
+  async function resolveQueueNoteUpdate(job) {
+    if (job.noteResult) {
+      return job.noteResult;
+    }
+
+    job.noteResult = job.noteUpdate
+      ? await job.noteUpdate
+      : { ok: false, error: "Miro note update was not started." };
+    return job.noteResult;
+  }
+
+  function cancelJob(job) {
+    if (isTerminalQueueStatus(job.status)) {
+      return;
+    }
+
+    job.cancelled = true;
+    updateJob(job, "cancelling", "Cancelling...", 82, true);
+
+    sendTalacherMessage({
+      type: "TALACHER_CANCEL_REQUEST",
+      requestId: job.requestId
+    }).catch(() => {});
+  }
+
+  function updateJob(job, status, label, percent, indeterminate = false) {
+    job.status = status;
+    job.element.className = `talacher-queue-item talacher-queue-item-${status}`;
+    job.element.classList.toggle("talacher-queue-item-indeterminate", indeterminate);
+    job.statusNode.textContent = label;
+    job.progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    job.cancelButton.disabled = isTerminalQueueStatus(status) || status === "cancelling";
+    job.cancelButton.hidden = isTerminalQueueStatus(status);
+    refreshQueue();
+  }
+
+  function refreshQueue() {
+    const jobList = Array.from(jobs.values());
+    const runningCount = jobList.filter((job) => !isTerminalQueueStatus(job.status)).length;
+    count.textContent = runningCount ? `${runningCount}/${jobList.length}` : String(jobList.length);
+    clearDone.disabled = !jobList.some((job) => isTerminalQueueStatus(job.status));
+    queue.hidden = jobList.length === 0;
+  }
+
+  return {
+    element: queue,
+    addJob,
+    startJob
+  };
+}
+
+function formatQueueTitle(payload) {
+  return [payload.firstTitle, payload.secondTitle]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(" ") || "Untitled item";
+}
+
+function buildQueueDoneLabel(itemName, readyTagCopied, noteResult) {
+  const details = [];
+
+  if (readyTagCopied) {
+    details.push("ready tag copied");
+  }
+
+  if (noteResult?.ok) {
+    details.push("note updated");
+  }
+
+  return details.length ? `Done: ${itemName} (${details.join(", ")})` : `Done: ${itemName}`;
+}
+
+function isTerminalQueueStatus(status) {
+  return status === "done" || status === "error" || status === "cancelled";
+}
+
+function throwIfQueueCancelled(job) {
+  if (job.cancelled) {
+    throw new Error("Cancelled.");
+  }
+}
+
+function isMissingMiroNoteError(error) {
+  return /no selected miro sticky note|no selected.*text item/i.test(String(error || ""));
 }
 
 function buildSuccessToast(baseMessage, details) {
