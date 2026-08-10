@@ -1,0 +1,85 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  width: 320px;
+  margin: 0;
+  background: #f7f8fb;
+  color: #1d2433;
+}
+
+.popup {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+}
+
+.status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #13a76b;
+  box-shadow: 0 0 0 5px rgba(19, 167, 107, 0.14);
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+p {
+  margin: 0;
+  color: #596275;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+button {
+  min-height: 36px;
+  border: 1px solid #cfd6e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2433;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #99a7bd;
+  background: #fdfefe;
+}
+
+.popup-field {
+  display: grid;
+  gap: 6px;
+  color: #343b4a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.popup-field input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #cfd6e4;
+  border-radius: 6px;
+  color: #1d2433;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+.popup-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.dev-status {
+  min-height: 20px;
+  font-size: 12px;
+}

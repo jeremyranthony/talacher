@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Talacher Test Extension",
+  "description": "A Chrome extension template for sending selected Miro art into monday.com.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Talacher",
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "clipboardRead",
+    "clipboardWrite",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "dev-reloader.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://miro.com/*",
+        "https://*.miro.com/*"
+      ],
+      "js": [
+        "miro-page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://miro.com/*",
+        "https://*.miro.com/*",
+        "https://monday.com/*",
+        "https://*.monday.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:17321/*",
+    "https://api.monday.com/*",
+    "https://miro.com/*",
+    "https://*.miro.com/*",
+    "https://*.mirostatic.com/*",
+    "https://*.amazonaws.com/*",
+    "https://monday.com/*",
+    "https://*.monday.com/*"
+  ]
+}

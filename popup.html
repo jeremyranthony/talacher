@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Talacher</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <div class="status-dot" aria-hidden="true"></div>
+      <h1>Talacher</h1>
+      <p>Configure monday access for Miro-to-board sends.</p>
+      <label class="popup-field">
+        <span>monday API token</span>
+        <input id="mondayToken" type="password" autocomplete="off" placeholder="Paste token">
+      </label>
+      <div class="popup-actions">
+        <button id="saveSettings" type="button">Save token</button>
+        <button id="fetchSchema" type="button">Fetch board</button>
+      </div>
+      <p id="settingsStatus" class="dev-status">Token not checked yet.</p>
+      <label class="popup-field">
+        <span>Preview delay, ms</span>
+        <input id="previewDelay" type="number" min="0" max="3000" step="50">
+      </label>
+      <button id="savePreviewDelay" type="button">Save preview delay</button>
+      <p id="previewDelayStatus" class="dev-status">Preview delay not checked yet.</p>
+      <button id="saveReadyTag" type="button">Save selected as ready tag</button>
+      <p id="readyTagStatus" class="dev-status">Ready tag not checked yet.</p>
+      <button id="checkReload" type="button">Check dev reload</button>
+      <p id="devStatus" class="dev-status">Dev watcher not checked yet.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
