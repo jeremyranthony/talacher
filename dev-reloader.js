@@ -143,7 +143,7 @@ async function handleTalacherMessage(message) {
   }
 
   if (message.type === "TALACHER_GET_MONDAY_ITEM_IMAGE") {
-    return getMondayItemImage(message.itemId, message.itemName);
+    return getMondayItemImage(message.itemId, message.itemName, message.fallbackImageUrl, message.imageMode);
   }
 
   throw new Error(`Unsupported message type: ${message.type}`);
@@ -360,22 +360,37 @@ async function createMondayItemWithSignal(payload, signal) {
   };
 }
 
-async function getMondayItemImage(itemId, itemName) {
+async function getMondayItemImage(itemId, itemName, fallbackImageUrl = "", imageMode = "legacy") {
   if (!itemId && !itemName) {
     throw new Error("No monday item ID or row title was found for this row.");
   }
 
   const settings = await getSettings();
+  const includeUpdates = imageMode === "monday-fetch";
 
   if (!itemId) {
-    return getMondayItemImageByName(itemName, settings);
+    return getMondayItemImageByName(itemName, settings, fallbackImageUrl, imageMode);
   }
 
+  const updatesSelection = includeUpdates ? `
+        updates(limit: 10) {
+          id
+          created_at
+          assets {
+            id
+            name
+            file_extension
+            url
+            public_url
+            url_thumbnail
+          }
+        }` : "";
   const query = `
     query TalacherItemImage($itemIds: [ID!], $columnIds: [String!]) {
       items(ids: $itemIds) {
         id
         name
+${updatesSelection}
         column_values(ids: $columnIds) {
           id
           text
@@ -389,17 +404,24 @@ async function getMondayItemImage(itemId, itemName) {
     columnIds: [settings.config.columns.imageRefLink]
   });
   const item = data.items?.[0];
-  const column = item?.column_values?.[0];
-  const url = extractMondayImageUrl(column);
-
-  return {
-    itemId: item?.id || String(itemId),
-    itemName: item?.name || "monday item",
-    imageUrl: url
-  };
+  return buildMondayItemImageState(item, fallbackImageUrl, String(itemId), includeUpdates);
 }
 
-async function getMondayItemImageByName(itemName, settings) {
+async function getMondayItemImageByName(itemName, settings, fallbackImageUrl = "", imageMode = "legacy") {
+  const includeUpdates = imageMode === "monday-fetch";
+  const updatesSelection = includeUpdates ? `
+            updates(limit: 10) {
+              id
+              created_at
+              assets {
+                id
+                name
+                file_extension
+                url
+                public_url
+                url_thumbnail
+              }
+            }` : "";
   const query = `
     query TalacherBoardImages($boardIds: [ID!], $columnIds: [String!]) {
       boards(ids: $boardIds) {
@@ -407,6 +429,7 @@ async function getMondayItemImageByName(itemName, settings) {
           items {
             id
             name
+${updatesSelection}
             column_values(ids: $columnIds) {
               id
               text
@@ -429,13 +452,7 @@ async function getMondayItemImageByName(itemName, settings) {
     throw new Error(`No monday item matched "${itemName}".`);
   }
 
-  const column = item.column_values?.[0];
-
-  return {
-    itemId: item.id,
-    itemName: item.name,
-    imageUrl: extractMondayImageUrl(column)
-  };
+  return buildMondayItemImageState(item, fallbackImageUrl, "", includeUpdates);
 }
 
 function normalizeMondayName(value) {
@@ -466,6 +483,45 @@ function extractMondayImageUrl(column) {
   } catch {
     return "";
   }
+}
+
+function buildMondayItemImageState(item, fallbackImageUrl = "", fallbackItemId = "", includeUpdates = false) {
+  const latestUpdateImageUrl = includeUpdates ? extractLatestMondayUpdateImageUrl(item?.updates || []) : "";
+  const columnUrl = extractMondayImageUrl(item?.column_values?.[0]);
+
+  return {
+    itemId: item?.id || fallbackItemId,
+    itemName: item?.name || "monday item",
+    imageUrl: latestUpdateImageUrl || fallbackImageUrl || columnUrl,
+    imageSource: latestUpdateImageUrl ? "latest_update" : "image_ref_link"
+  };
+}
+
+function extractLatestMondayUpdateImageUrl(updates) {
+  return [...updates]
+    .sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0))
+    .flatMap((update) => update.assets || [])
+    .map(getMondayAssetImageUrl)
+    .find(Boolean) || "";
+}
+
+function getMondayAssetImageUrl(asset) {
+  if (!asset) {
+    return "";
+  }
+
+  const url = asset.public_url || asset.url || asset.url_thumbnail || "";
+  const fileHint = `${asset.name || ""}.${asset.file_extension || ""}`;
+
+  if (!url) {
+    return "";
+  }
+
+  if (/\.(png|jpe?g|webp|gif|bmp|avif)(?:$|[?#])/i.test(fileHint) || asset.url_thumbnail) {
+    return url;
+  }
+
+  return "";
 }
 
 function throwIfAborted(signal) {

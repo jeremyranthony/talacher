@@ -26,6 +26,21 @@
       </label>
       <button id="savePreviewDelay" type="button">Save preview delay</button>
       <p id="previewDelayStatus" class="dev-status">Preview delay not checked yet.</p>
+      <label class="popup-field">
+        <span>Preview image source</span>
+        <select id="previewImageMode">
+          <option value="legacy">Legacy</option>
+          <option value="monday-fetch">Monday Fetch</option>
+        </select>
+      </label>
+      <button id="savePreviewImageMode" type="button">Save image source</button>
+      <p id="previewImageModeStatus" class="dev-status">Preview image source not checked yet.</p>
+      <label class="popup-check">
+        <input id="immediateStatusPreview" type="checkbox">
+        <span>Immediate status preview</span>
+      </label>
+      <button id="saveImmediateStatusPreview" type="button">Save status preview</button>
+      <p id="immediateStatusPreviewStatus" class="dev-status">Status preview not checked yet.</p>
       <button id="saveReadyTag" type="button">Save selected as ready tag</button>
       <p id="readyTagStatus" class="dev-status">Ready tag not checked yet.</p>
       <button id="checkReload" type="button">Check dev reload</button>

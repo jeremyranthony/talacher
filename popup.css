@@ -62,15 +62,32 @@ button:hover {
   font-weight: 700;
 }
 
-.popup-field input {
+.popup-field input,
+.popup-field select {
   width: 100%;
   min-height: 36px;
   border: 1px solid #cfd6e4;
   border-radius: 6px;
+  background: #ffffff;
   color: #1d2433;
   font: inherit;
   font-size: 13px;
   padding: 0 10px;
+}
+
+.popup-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #343b4a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.popup-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 .popup-actions {

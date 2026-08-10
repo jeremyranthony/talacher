@@ -1158,12 +1158,20 @@ function initializeMondayHoverPreview() {
   let activeRow = null;
   let activeHoverToken = 0;
   let previewDelayMs = 500;
+  let previewImageMode = "legacy";
+  let immediateStatusPreview = true;
   const imageCache = new Map();
   const previewAssetCache = new Map();
   let lastPreviewPoint = { x: 24, y: 24 };
 
-  chrome.storage.local.get("talacherPreviewDelayMs").then((stored) => {
+  chrome.storage.local.get([
+    "talacherPreviewDelayMs",
+    "talacherPreviewImageMode",
+    "talacherImmediateStatusPreview"
+  ]).then((stored) => {
     previewDelayMs = Number.isFinite(stored.talacherPreviewDelayMs) ? stored.talacherPreviewDelayMs : 500;
+    previewImageMode = stored.talacherPreviewImageMode === "monday-fetch" ? "monday-fetch" : "legacy";
+    immediateStatusPreview = stored.talacherImmediateStatusPreview !== false;
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -1172,17 +1180,34 @@ function initializeMondayHoverPreview() {
         ? changes.talacherPreviewDelayMs.newValue
         : 500;
     }
+
+    if (areaName === "local" && changes.talacherPreviewImageMode) {
+      previewImageMode = changes.talacherPreviewImageMode.newValue === "monday-fetch" ? "monday-fetch" : "legacy";
+      imageCache.clear();
+      previewAssetCache.clear();
+    }
+
+    if (areaName === "local" && changes.talacherImmediateStatusPreview) {
+      immediateStatusPreview = changes.talacherImmediateStatusPreview.newValue !== false;
+    }
   });
 
   const preview = document.createElement("div");
   preview.className = "talacher-root talacher-monday-preview";
   preview.hidden = true;
   preview.innerHTML = `
+    <div class="talacher-preview-loading-panel" data-talacher-monday-preview-loading>
+      <strong>Loading preview</strong>
+      <span data-talacher-monday-preview-loading-status>Checking image source...</span>
+      <div class="talacher-preview-loading-bar" aria-hidden="true"></div>
+    </div>
     <div class="talacher-preview-frame">
       <img alt="" data-talacher-monday-preview-image>
     </div>
     <p class="talacher-preview-caption" data-talacher-monday-preview-caption></p>
   `;
+  const previewLoading = preview.querySelector("[data-talacher-monday-preview-loading]");
+  const previewLoadingStatus = preview.querySelector("[data-talacher-monday-preview-loading-status]");
   const previewImage = preview.querySelector("[data-talacher-monday-preview-image]");
   const previewCaption = preview.querySelector("[data-talacher-monday-preview-caption]");
 
@@ -1224,9 +1249,32 @@ function initializeMondayHoverPreview() {
 
   const renderPreview = (state, imageSize, point) => {
     applyMondayPreviewSize(preview, imageSize);
+    preview.classList.remove("talacher-monday-preview-loading");
+    previewLoading.hidden = true;
+    previewImage.hidden = false;
     previewImage.src = state.imageUrl;
     previewImage.alt = `${state.caption || state.itemName || "monday item"} image preview`;
     previewCaption.textContent = state.caption || state.itemName || "";
+    previewCaption.hidden = false;
+    preview.hidden = false;
+    positionPreview(point);
+    requestAnimationFrame(() => {
+      positionPreview(point);
+      preview.classList.add("talacher-monday-preview-visible");
+    });
+  };
+
+  const renderLoadingPreview = (point) => {
+    preview.style.setProperty("--talacher-preview-width", "260px");
+    preview.style.removeProperty("--talacher-preview-frame-height");
+    previewImage.removeAttribute("src");
+    previewImage.hidden = true;
+    previewCaption.hidden = true;
+    previewLoading.hidden = false;
+    previewLoadingStatus.textContent = previewImageMode === "monday-fetch"
+      ? "Fetching latest monday update..."
+      : "Loading ImageRef Link preview...";
+    preview.classList.add("talacher-monday-preview-loading");
     preview.hidden = false;
     positionPreview(point);
     requestAnimationFrame(() => {
@@ -1256,12 +1304,36 @@ function initializeMondayHoverPreview() {
     const itemName = getMondayItemNameFromRow(row);
     const secondTitle = getMondaySecondTitleFromRow(row);
     const domImageUrl = getMondayImageRefUrlFromRow(row);
+    const cacheKey = getMondayPreviewCacheKey({
+      itemId,
+      itemName,
+      imageUrl: domImageUrl,
+      imageMode: previewImageMode
+    });
+    const cachedPreviewState = imageCache.get(cacheKey);
+    const cachedPreviewUrl = cachedPreviewState && typeof cachedPreviewState.then !== "function"
+      ? cachedPreviewState.imageUrl
+      : "";
+    const cachedAssetUrl = cachedPreviewUrl || domImageUrl;
+    const hasDecodedPreviewAsset = Boolean(cachedAssetUrl && previewAssetCache.has(cachedAssetUrl));
+    const shouldShowLoadingPreview = immediateStatusPreview &&
+      !hasDecodedPreviewAsset;
 
     if (!domImageUrl && !itemId && !itemName) {
       return;
     }
 
-    loadMondayPreviewImage({ itemId, itemName, secondTitle, imageUrl: domImageUrl }, imageCache)
+    if (shouldShowLoadingPreview) {
+      renderLoadingPreview(previewPoint);
+    }
+
+    loadMondayPreviewImage({
+      itemId,
+      itemName,
+      secondTitle,
+      imageUrl: domImageUrl,
+      imageMode: previewImageMode
+    }, imageCache)
       .then(async (state) => {
         const imageSize = state.imageUrl
           ? await preloadMondayPreviewAsset(state.imageUrl, previewAssetCache)
@@ -1272,13 +1344,22 @@ function initializeMondayHoverPreview() {
           await wait(remainingDelay);
         }
 
-        if (activeHoverToken !== hoverToken || activeRow !== row || !state.imageUrl || !document.documentElement.contains(row)) {
+        if (activeHoverToken !== hoverToken || activeRow !== row || !document.documentElement.contains(row)) {
+          return;
+        }
+
+        if (!state.imageUrl) {
+          hidePreview();
           return;
         }
 
         renderPreview(state, imageSize, previewPoint);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (activeHoverToken === hoverToken && activeRow === row) {
+          hidePreview();
+        }
+      });
   }, true);
 
   document.addEventListener("mouseout", (event) => {
@@ -1466,7 +1547,7 @@ function extractFirstUrl(value) {
 }
 
 async function loadMondayPreviewImage(rowRef, cache) {
-  const cacheKey = rowRef.itemId || rowRef.imageUrl || `name:${rowRef.itemName}`;
+  const cacheKey = getMondayPreviewCacheKey(rowRef);
 
   if (cache.has(cacheKey)) {
     return cache.get(cacheKey);
@@ -1483,6 +1564,10 @@ async function loadMondayPreviewImage(rowRef, cache) {
     cache.delete(cacheKey);
     throw error;
   }
+}
+
+function getMondayPreviewCacheKey(rowRef) {
+  return `${rowRef.imageMode || "legacy"}:${rowRef.itemId || rowRef.imageUrl || `name:${rowRef.itemName}`}`;
 }
 
 function preloadMondayPreviewAsset(imageUrl, cache) {
@@ -1513,8 +1598,8 @@ function applyMondayPreviewSize(preview, imageSize) {
   const ratio = Math.min(Math.max(naturalWidth / naturalHeight, 0.22), 4.5);
   const viewportWidth = Math.max(280, window.innerWidth);
   const viewportHeight = Math.max(280, window.innerHeight);
-  const maxFrameWidth = Math.min(420, viewportWidth - 32);
-  const maxFrameHeight = Math.min(640, viewportHeight - 96);
+  const maxFrameWidth = Math.min(360, viewportWidth - 32);
+  const maxFrameHeight = Math.min(560, viewportHeight - 96);
   let frameWidth = maxFrameWidth;
   let frameHeight = frameWidth / ratio;
 
@@ -1541,20 +1626,45 @@ function applyMondayPreviewSize(preview, imageSize) {
 }
 
 async function resolveMondayPreviewImage(rowRef) {
-  if (rowRef.imageUrl) {
-    return {
+  const fallbackState = rowRef.imageUrl
+    ? {
       imageUrl: rowRef.imageUrl,
       itemName: rowRef.itemName,
       secondTitle: rowRef.secondTitle,
       caption: formatMondayPreviewCaption(rowRef.itemName, rowRef.secondTitle)
+    }
+    : null;
+
+  if (rowRef.imageMode !== "monday-fetch" && fallbackState) {
+    return fallbackState;
+  }
+
+  if (!rowRef.itemId && !rowRef.itemName) {
+    return fallbackState || {
+      itemName: rowRef.itemName,
+      secondTitle: rowRef.secondTitle,
+      caption: ""
     };
   }
 
-  const result = await sendTalacherMessage({
-    type: "TALACHER_GET_MONDAY_ITEM_IMAGE",
-    itemId: rowRef.itemId,
-    itemName: rowRef.itemName
-  });
+  let result;
+
+  try {
+    result = await sendTalacherMessage({
+      type: "TALACHER_GET_MONDAY_ITEM_IMAGE",
+      itemId: rowRef.itemId,
+      itemName: rowRef.itemName,
+      fallbackImageUrl: rowRef.imageUrl,
+      imageMode: rowRef.imageMode
+    });
+  } catch (error) {
+    if (fallbackState) {
+      return fallbackState;
+    }
+
+    throw error;
+  }
+
   const state = result.imageUrl
     ? {
       imageUrl: result.imageUrl,
