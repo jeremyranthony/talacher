@@ -95,6 +95,15 @@ Current files:
 - Make sure the monday hover preview targets real board rows only.
 - Avoid preview appearing over headers, empty rows, menus, or unrelated UI.
 
+### Send dialog (current)
+
+- Opening the dialog asks the Miro Web SDK (via `miro-page-bridge.js`) for the selection first: images, text notes and item IDs, with groups expanded into their items. The full-size image loads with a 45 s budget; the 120 px `preview` format is shown blurred until it arrives. "Copy as image" is only a fallback when the selection has no image item, and the clipboard read is capped at 4 s.
+- The pointer-based DOM capture never uses Miro's full-board canvas and never overrides the dialog's preview.
+- Several selected images: a thumbnail strip picks which one uploads.
+- Selected notes: the dialog lists them to choose which one gets the titles (or none); "Use as titles" fills the title fields from a note.
+- "Group the selection on Miro after sending" groups the selected items once the row is created (remembered between sends; disabled when items are already in another group).
+- Group, Priority, Rarity and Asset type use `content-picker.js`: searchable dropdowns showing monday's label and group colors. Groups refresh from monday every 5 minutes.
+
 ### Phase 2: Miro Selection Capture
 
 - Detect the currently selected Miro image/card. Status: context-menu sends now try Miro Web SDK selected image `getDataUrl("original")` first, so image+note multi-selection uploads only the image. Native `Copy as image` and DOM/nearby-image detection remain as fallbacks.
@@ -132,7 +141,7 @@ Current files:
   - Asset Type
   - Rarity
   - ImageRef Link
-- Status-like monday columns are sent by stable label index rather than label text to avoid deactivated-label errors from duplicate/old labels.
+- Status-like monday columns are sent by label ID, resolved from the board's live column settings (deactivated labels skipped, cached 5 minutes, refreshed on "Fetch board"). The form's Priority/Asset Type/Rarity options sync to the live labels when opened. The hardcoded `MONDAY_STATUS_INDEXES` map is only a fallback when labels can't be fetched.
 - Upload selected Miro image as an update on the created row. Status: initial `create_update` + `add_file_to_update` flow is wired.
 - Populate `ImageRef Link` with the returned monday asset URL. Status: initial text-column write is wired.
 - Store returned monday item ID for follow-up behavior.

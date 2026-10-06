@@ -17,6 +17,61 @@ const DEFAULT_MONDAY_CONFIG = {
   }
 };
 
+const MONDAY_LABEL_COLUMN_KEYS = ["priority", "status", "assetType", "rarity"];
+const MONDAY_LABEL_COLUMN_TITLES = {
+  priority: "Priority",
+  status: "Status",
+  assetType: "Asset Type",
+  rarity: "Rarity"
+};
+const MONDAY_LABELS_CACHE_MS = 5 * 60 * 1000;
+const MONDAY_GROUPS_CACHE_MS = 5 * 60 * 1000;
+
+// Fallback for label colors when only the 2025-10 color names are available.
+const MONDAY_COLOR_NAMES = {
+  done_green: "#00c875",
+  working_orange: "#fdab3d",
+  stuck_red: "#df2f4a",
+  dark_blue: "#007eb5",
+  bright_blue: "#579bfc",
+  purple: "#9d50dd",
+  dark_purple: "#784bd1",
+  grass_green: "#037f4c",
+  bright_green: "#9cd326",
+  saladish: "#cab641",
+  egg_yolk: "#ffcb00",
+  dark_orange: "#ff6d3b",
+  dark_red: "#bb3354",
+  sofia_pink: "#ff158a",
+  lipstick: "#ff5ac4",
+  chili_blue: "#66ccff",
+  american_gray: "#757575",
+  explosive: "#c4c4c4",
+  blackish: "#333333",
+  brown: "#7f5347",
+  sunset: "#ff7575",
+  bubble: "#faa1f1",
+  peach: "#ffadad",
+  berry: "#7e3b8a",
+  winter: "#9aadbd",
+  river: "#68a1bd",
+  navy: "#225091",
+  aquamarine: "#4eccc6",
+  indigo: "#5559df",
+  dark_indigo: "#401694",
+  pecan: "#563e3e",
+  lavender: "#bda8f9",
+  royal: "#2b76e5",
+  steel: "#a9bee8",
+  orchid: "#e484bd",
+  lilac: "#9d99b9",
+  tan: "#a1887f",
+  sky: "#a1e3f6",
+  coffee: "#cd9282",
+  teal: "#175a63"
+};
+
+// Fallback only: used when the board's live labels can't be fetched.
 const MONDAY_STATUS_INDEXES = {
   priority: {
     "Critical": 10,
@@ -134,6 +189,14 @@ async function handleTalacherMessage(message) {
     return fetchBoardSchema();
   }
 
+  if (message.type === "TALACHER_GET_GROUPS") {
+    return getMondayGroups();
+  }
+
+  if (message.type === "TALACHER_GET_COLUMN_LABELS") {
+    return getMondayColumnLabels(await getSettings());
+  }
+
   if (message.type === "TALACHER_CREATE_MONDAY_ITEM") {
     return createMondayItem(message.payload || {}, message.requestId);
   }
@@ -207,6 +270,7 @@ async function fetchBoardSchema() {
         groups {
           id
           title
+          color
           archived
           deleted
         }
@@ -229,20 +293,24 @@ async function fetchBoardSchema() {
 
   const groups = board.groups
     .filter((group) => !group.archived && !group.deleted)
-    .map((group) => ({ id: group.id, title: group.title }));
+    .map((group) => ({ id: group.id, title: group.title, color: group.color || null }));
 
   const defaultGroup = groups.find((group) => group.title === DEFAULT_MONDAY_CONFIG.groupTitle) || groups[0];
+  // Drop a saved group that has since been archived or deleted.
+  const savedGroup = groups.find((group) => group.id === settings.config.groupId);
   const nextConfig = {
     ...settings.config,
     boardId: board.id,
-    groupId: settings.config.groupId || defaultGroup?.id || DEFAULT_MONDAY_CONFIG.groupId,
-    groupTitle: groups.find((group) => group.id === settings.config.groupId)?.title || defaultGroup?.title || DEFAULT_MONDAY_CONFIG.groupTitle
+    groupId: savedGroup?.id || defaultGroup?.id || DEFAULT_MONDAY_CONFIG.groupId,
+    groupTitle: savedGroup?.title || defaultGroup?.title || DEFAULT_MONDAY_CONFIG.groupTitle
   };
 
   await chrome.storage.local.set({
     mondayGroups: groups,
+    mondayGroupsFetchedAt: Date.now(),
     mondayConfig: nextConfig
   });
+  await getMondayColumnLabelsOrNull({ ...settings, config: nextConfig }, { force: true });
 
   return {
     board: { id: board.id, name: board.name },
@@ -250,6 +318,27 @@ async function fetchBoardSchema() {
     columns: board.columns,
     config: nextConfig
   };
+}
+
+// Groups for the send dialog: refreshed from monday every few minutes so new groups (e.g. a new
+// season) appear without pressing "Fetch board"; falls back to the stored list when offline.
+async function getMondayGroups() {
+  const settings = await getSettings();
+  const { mondayGroupsFetchedAt } = await chrome.storage.local.get("mondayGroupsFetchedAt");
+  const isFresh = Date.now() - (mondayGroupsFetchedAt || 0) < MONDAY_GROUPS_CACHE_MS
+    && settings.groups.every((group) => "color" in group);
+
+  if (!isFresh && settings.tokenConfigured) {
+    try {
+      const schema = await fetchBoardSchema();
+      return { groups: schema.groups, groupId: schema.config.groupId, stale: false };
+    } catch (error) {
+      console.warn("Talacher could not refresh monday groups; using the saved list.", error);
+      return { groups: settings.groups, groupId: settings.config.groupId, stale: true };
+    }
+  }
+
+  return { groups: settings.groups, groupId: settings.config.groupId, stale: false };
 }
 
 async function createMondayItem(payload, requestId) {
@@ -301,10 +390,7 @@ async function createMondayItemWithSignal(payload, signal) {
 
   const columnValues = {};
   setTextColumn(columnValues, config.columns.secondTitle, payload.secondTitle);
-  setStatusColumn(columnValues, config.columns.priority, payload.priority, MONDAY_STATUS_INDEXES.priority);
-  setStatusColumn(columnValues, config.columns.status, payload.status || "Ready To Start", MONDAY_STATUS_INDEXES.status);
-  setStatusColumn(columnValues, config.columns.assetType, payload.assetType, MONDAY_STATUS_INDEXES.assetType);
-  setStatusColumn(columnValues, config.columns.rarity, payload.rarity, MONDAY_STATUS_INDEXES.rarity);
+  const statusSelections = await setStatusColumns(columnValues, settings, payload, signal);
 
   const mutation = `
     mutation CreateTalacherItem($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON!) {
@@ -321,12 +407,25 @@ async function createMondayItemWithSignal(payload, signal) {
     }
   `;
 
-  const data = await mondayRequest(mutation, {
-    boardId: config.boardId,
-    groupId: config.groupId,
-    itemName: firstTitle,
-    columnValues: JSON.stringify(columnValues)
-  }, signal);
+  let data;
+
+  try {
+    data = await mondayRequest(mutation, {
+      boardId: config.boardId,
+      groupId: config.groupId,
+      itemName: firstTitle,
+      columnValues: JSON.stringify(columnValues)
+    }, signal);
+  } catch (error) {
+    if (/deactivated/i.test(error.message)) {
+      // The board's labels changed since they were cached; force a fresh lookup on the next send.
+      await chrome.storage.local.remove("mondayColumnLabels");
+      const sentLabels = statusSelections.map((selection) => `${MONDAY_LABEL_COLUMN_TITLES[selection.key]}: ${selection.label}`).join(", ");
+      throw new Error(`monday rejected a deactivated label (${sentLabels}). Board labels were refreshed, so reopen the form and try again.`);
+    }
+
+    throw error;
+  }
 
   const item = data.create_item;
   let update = null;
@@ -652,6 +751,200 @@ function setTextColumn(columnValues, columnId, value) {
   }
 }
 
+async function setStatusColumns(columnValues, settings, payload, signal) {
+  const selections = MONDAY_LABEL_COLUMN_KEYS
+    .map((key) => ({
+      key,
+      columnId: settings.config.columns[key],
+      label: (key === "status" ? payload.status || "Ready To Start" : payload[key] || "").trim()
+    }))
+    .filter((selection) => selection.columnId && selection.label);
+
+  if (!selections.length) {
+    return selections;
+  }
+
+  let liveColumns = await getMondayColumnLabelsOrNull(settings, { signal });
+
+  if (liveColumns && selections.some((selection) => findMondayLabelId(liveColumns[selection.key], selection.label) === null)) {
+    liveColumns = await getMondayColumnLabelsOrNull(settings, { force: true, signal }) || liveColumns;
+  }
+
+  for (const selection of selections) {
+    const liveColumn = liveColumns?.[selection.key];
+
+    if (!liveColumn) {
+      // Live labels unavailable: fall back to the hardcoded index map.
+      setStatusColumn(columnValues, selection.columnId, selection.label, MONDAY_STATUS_INDEXES[selection.key]);
+      continue;
+    }
+
+    const labelId = findMondayLabelId(liveColumn, selection.label);
+
+    if (labelId === null) {
+      throw new Error(`${MONDAY_LABEL_COLUMN_TITLES[selection.key]}: "${selection.label}" is not an active label on the monday board. Reopen the form to load the current options.`);
+    }
+
+    columnValues[selection.columnId] = { index: labelId };
+  }
+
+  return selections;
+}
+
+async function getMondayColumnLabels(settings, { force = false, signal } = {}) {
+  const { mondayColumnLabels } = await chrome.storage.local.get("mondayColumnLabels");
+  const isFresh = mondayColumnLabels?.boardId === settings.config.boardId
+    && Date.now() - mondayColumnLabels.fetchedAt < MONDAY_LABELS_CACHE_MS;
+
+  if (isFresh && !force) {
+    return mondayColumnLabels.columns;
+  }
+
+  const columns = await fetchMondayColumnLabels(settings.config, signal);
+  await chrome.storage.local.set({
+    mondayColumnLabels: {
+      boardId: settings.config.boardId,
+      fetchedAt: Date.now(),
+      columns
+    }
+  });
+
+  return columns;
+}
+
+async function getMondayColumnLabelsOrNull(settings, options) {
+  try {
+    return await getMondayColumnLabels(settings, options);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw error;
+    }
+
+    console.warn("Talacher could not load monday labels; using built-in label indexes.", error);
+    return null;
+  }
+}
+
+async function fetchMondayColumnLabels(config, signal) {
+  const columnIds = MONDAY_LABEL_COLUMN_KEYS.map((key) => config.columns[key]).filter(Boolean);
+  const variables = { boardId: [config.boardId], columnIds };
+
+  // 2025-10 `settings` says which labels are deactivated; legacy `settings_str` carries the
+  // label hex colors. Fetch both and merge whatever succeeds.
+  const [modern, legacy] = await Promise.allSettled([
+    mondayRequest(`
+      query TalacherColumnLabels($boardId: [ID!], $columnIds: [String]) {
+        boards(ids: $boardId) {
+          columns(ids: $columnIds) { id title settings }
+        }
+      }
+    `, variables, signal, { apiVersion: "2025-10" }),
+    mondayRequest(`
+      query TalacherColumnLabelsLegacy($boardId: [ID!], $columnIds: [String]) {
+        boards(ids: $boardId) {
+          columns(ids: $columnIds) { id title settings_str }
+        }
+      }
+    `, variables, signal)
+  ]);
+
+  for (const outcome of [modern, legacy]) {
+    if (outcome.status === "rejected" && outcome.reason?.name === "AbortError") {
+      throw outcome.reason;
+    }
+  }
+
+  const modernColumns = modern.status === "fulfilled" ? modern.value.boards?.[0]?.columns || [] : [];
+  const legacyColumns = legacy.status === "fulfilled" ? legacy.value.boards?.[0]?.columns || [] : [];
+
+  if (!modernColumns.length && !legacyColumns.length) {
+    const reason = modern.reason || legacy.reason;
+    throw reason || new Error("monday label columns were not found on the board.");
+  }
+
+  const result = {};
+
+  for (const key of MONDAY_LABEL_COLUMN_KEYS) {
+    const columnId = config.columns[key];
+    const modernColumn = modernColumns.find((candidate) => candidate.id === columnId);
+    const legacyColumn = legacyColumns.find((candidate) => candidate.id === columnId);
+    const column = modernColumn || legacyColumn;
+
+    if (!column) {
+      continue;
+    }
+
+    const legacyColors = parseMondayLabelColors(legacyColumn?.settings_str);
+    result[key] = {
+      id: column.id,
+      title: column.title,
+      labels: parseMondayStatusLabels(modernColumn ? modernColumn.settings : legacyColumn.settings_str)
+        .map((label) => ({
+          ...label,
+          color: legacyColors[label.id] || MONDAY_COLOR_NAMES[label.colorName] || null
+        }))
+    };
+  }
+
+  return result;
+}
+
+function parseMondayLabelColors(settingsStr) {
+  try {
+    const settings = JSON.parse(settingsStr || "{}");
+    return Object.fromEntries(Object.entries(settings.labels_colors || {})
+      .map(([id, value]) => [Number(id), value?.color])
+      .filter(([, color]) => /^#[0-9a-f]{6}$/i.test(color || "")));
+  } catch {
+    return {};
+  }
+}
+
+function parseMondayStatusLabels(rawSettings) {
+  const settings = typeof rawSettings === "string" ? JSON.parse(rawSettings || "{}") : rawSettings || {};
+
+  // API 2025-10+: labels is an array of { id, label, index, is_deactivated }.
+  if (Array.isArray(settings.labels)) {
+    return settings.labels
+      .filter((label) => !label.is_deactivated && label.label?.trim())
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      .map((label) => ({ id: Number(label.id), label: label.label, colorName: label.color }));
+  }
+
+  // Older settings_str: labels is a { id: text } map.
+  const deactivated = new Set((settings.deactivated_labels || []).map(String));
+  const positions = settings.labels_positions_v2 || {};
+
+  return Object.entries(settings.labels || {})
+    .filter(([id, text]) => !deactivated.has(id) && String(text).trim())
+    .sort(([a], [b]) => (positions[a] ?? Number(a)) - (positions[b] ?? Number(b)))
+    .map(([id, text]) => ({ id: Number(id), label: text }));
+}
+
+function findMondayLabelId(column, label) {
+  if (!column?.labels) {
+    return null;
+  }
+
+  const exact = column.labels.find((candidate) => candidate.label === label);
+
+  if (exact) {
+    return exact.id;
+  }
+
+  const normalized = normalizeMondayLabel(label);
+  const loose = column.labels.find((candidate) => normalizeMondayLabel(candidate.label) === normalized);
+  return loose ? loose.id : null;
+}
+
+function normalizeMondayLabel(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
 function setStatusColumn(columnValues, columnId, label, indexMap) {
   if (!columnId || !label) {
     return;
@@ -665,7 +958,7 @@ function setStatusColumn(columnValues, columnId, label, indexMap) {
   columnValues[columnId] = { label };
 }
 
-async function mondayRequest(query, variables, signal) {
+async function mondayRequest(query, variables, signal, { apiVersion = "2025-04" } = {}) {
   const { mondayToken } = await chrome.storage.local.get("mondayToken");
 
   if (!mondayToken) {
@@ -676,7 +969,7 @@ async function mondayRequest(query, variables, signal) {
     method: "POST",
     headers: {
       "Authorization": mondayToken,
-      "API-Version": "2025-04",
+      "API-Version": apiVersion,
       "Content-Type": "application/json"
     },
     signal,
@@ -686,7 +979,8 @@ async function mondayRequest(query, variables, signal) {
   const body = await response.json();
 
   if (!response.ok || body.errors?.length) {
-    throw new Error(body.errors?.[0]?.message || `monday API request failed with HTTP ${response.status}.`);
+    const message = body.errors?.[0]?.message?.replace(/\s*Please check our API documentation[\s\S]*$/i, "");
+    throw new Error(message || `monday API request failed with HTTP ${response.status}.`);
   }
 
   return body.data;

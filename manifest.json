@@ -36,6 +36,7 @@
         "https://*.monday.com/*"
       ],
       "js": [
+        "content-picker.js",
         "content.js"
       ],
       "css": [

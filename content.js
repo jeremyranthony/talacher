@@ -1,23 +1,3 @@
-(function initializeTalacherContentScript() {
-  const host = window.location.hostname;
-  const isMiro = host === "miro.com" || host.endsWith(".miro.com");
-  const isMonday = host === "monday.com" || host.endsWith(".monday.com");
-
-  if (window.__talacherContentScriptLoaded) {
-    return;
-  }
-
-  window.__talacherContentScriptLoaded = true;
-
-  if (isMiro) {
-    initializeMiroTestAction();
-  }
-
-  if (isMonday) {
-    initializeMondayHoverPreview();
-  }
-})();
-
 function initializeMiroTestAction() {
   let lastPointer = { x: 24, y: 96, time: Date.now() };
   let selectedImage = null;
@@ -48,7 +28,6 @@ function initializeMiroTestAction() {
       time: Date.now()
     };
     selectedImage = captureMiroImageCandidate(event);
-    dialog.setSelection(selectedImage);
     scheduleSync();
     setTimeout(syncMiroAction, 250);
     setTimeout(syncMiroAction, 600);
@@ -150,11 +129,29 @@ function createMiroFallbackAction(openDialog) {
   return action;
 }
 
-function createMiroSendDialog(getSelectedImage) {
+const TALACHER_FALLBACK_LABELS = {
+  priority: ["Critical", "High", "Medium", "Low"],
+  rarity: ["Pending", "Bronze", "Ruby", "Silver", "Unset", "Gold", "Amethyst", "Diamond"],
+  assetType: [
+    "Not Categorized", "Gloves", "Visor", "2D Shirt", "VFX", "Head Accessory", "3D Model", "Football",
+    "Face Accessory", "2D Pants", "Emoji", "Face Mask", "LC Shirt", "Cleat", "Sleeve", "End Zone", "Costume",
+    "Socks", "LC Pants", "Hat Accessory", "Arm Accessory", "Head", "Front Accessory", "Trail", "Backplate",
+    "Hair", "Vest", "Waist Accessory", "Neck Accessory", "Helmet", "Back Accessory", "Wrist Accessory",
+    "Animation", "Trade Booth"
+  ]
+};
+const TALACHER_LABEL_DEFAULTS = { priority: "", rarity: "Pending", assetType: "Not Categorized" };
+
+function createMiroSendDialog(getPointerSelection) {
   const dialog = document.createElement("div");
   const toast = document.createElement("div");
   let toastTimer = null;
   let activeSelection = null;
+  let miroSnapshot = null;
+  let captureToken = 0;
+  let imageAttempt = 0;
+  let isCapturing = false;
+  let previewCache = new Map();
 
   dialog.className = "talacher-root talacher-dialog-shell";
   dialog.hidden = true;
@@ -165,101 +162,60 @@ function createMiroSendDialog(getSelectedImage) {
     <section class="talacher-send-dialog" role="dialog" aria-modal="true" aria-labelledby="talacher-send-title">
       <header class="talacher-dialog-header">
         <div>
-          <p class="talacher-dialog-kicker">CH3 S1 OG Season</p>
           <h2 id="talacher-send-title">Send to monday board</h2>
+          <p class="talacher-dialog-summary" data-talacher-summary></p>
         </div>
-        <button class="talacher-icon-button" type="button" aria-label="Close" data-talacher-close>X</button>
+        <button class="talacher-icon-button" type="button" aria-label="Close" data-talacher-close>
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
       </header>
-      <form class="talacher-send-form">
+      <form class="talacher-send-form" novalidate>
         <div class="talacher-send-layout">
-          <div class="talacher-form-fields">
-            <label>
-              <span>Group</span>
-              <select name="groupId" data-talacher-group-select>
-                <option value="group_mm60k55f">CH3 S1 OG Season</option>
-              </select>
-            </label>
-            <label>
-              <span>First title</span>
-              <input name="firstTitle" type="text" autocomplete="off" required>
-            </label>
-            <label>
-              <span>Second Title</span>
-              <input name="secondTitle" type="text" autocomplete="off">
-            </label>
-            <input name="status" type="hidden" value="Ready To Start">
+          <section class="talacher-art" data-talacher-preview aria-label="Image to upload">
+            <div class="talacher-image-preview-frame">
+              <img alt="" data-talacher-preview-image>
+              <div class="talacher-art-status" data-talacher-art-status hidden>
+                <span class="talacher-spinner" aria-hidden="true"></span>
+                <span data-talacher-art-status-label></span>
+              </div>
+            </div>
+            <div class="talacher-art-strip" data-talacher-art-strip role="radiogroup" aria-label="Choose the image to upload" hidden></div>
+            <p class="talacher-art-caption">
+              <span data-talacher-preview-caption></span>
+              <button type="button" class="talacher-link-button" data-talacher-recapture hidden>Read selection again</button>
+            </p>
+          </section>
+          <div class="talacher-form-fields" data-talacher-fields>
+            <div data-talacher-slot="groupId"></div>
             <div class="talacher-form-grid">
-              <label>
-                <span>Priority</span>
-                <select name="priority">
-                  <option value="">Select</option>
-                  <option>Critical</option>
-                  <option>High</option>
-                  <option>Medium</option>
-                  <option>Low</option>
-                </select>
+              <label class="talacher-field">
+                <span class="talacher-field-label">First title</span>
+                <input name="firstTitle" type="text" autocomplete="off" required>
               </label>
-              <label>
-                <span>Rarity</span>
-                <select name="rarity">
-                  <option>Pending</option>
-                  <option>Bronze</option>
-                  <option>Ruby</option>
-                  <option>Silver</option>
-                  <option>Unset</option>
-                  <option>Gold</option>
-                  <option>Amethyst</option>
-                  <option>Diamond</option>
-                </select>
+              <label class="talacher-field">
+                <span class="talacher-field-label">Second title</span>
+                <input name="secondTitle" type="text" autocomplete="off">
               </label>
             </div>
-            <label>
-              <span>Asset Type</span>
-              <select name="assetType">
-                <option>Not Categorized</option>
-                <option>Gloves</option>
-                <option>Visor</option>
-                <option>2D Shirt</option>
-                <option>VFX</option>
-                <option>Head Accessory</option>
-                <option>3D Model</option>
-                <option>Football</option>
-                <option>Face Accessory</option>
-                <option>2D Pants</option>
-                <option>Emoji</option>
-                <option>Face Mask</option>
-                <option>LC Shirt</option>
-                <option>Cleat</option>
-                <option>Sleeve</option>
-                <option>End Zone</option>
-                <option>Costume</option>
-                <option>Socks</option>
-                <option>LC Pants</option>
-                <option>Hat Accessory</option>
-                <option>Arm Accessory</option>
-                <option>Head</option>
-                <option>Front Accessory</option>
-                <option>Trail</option>
-                <option>Backplate</option>
-                <option>Hair</option>
-                <option>Vest</option>
-                <option>Waist Accessory</option>
-                <option>Neck Accessory</option>
-                <option>Helmet</option>
-                <option>Back Accessory</option>
-                <option>Wrist Accessory</option>
-                <option>Animation</option>
-                <option>Trade Booth</option>
-              </select>
+            <input name="status" type="hidden" value="Ready To Start">
+            <div class="talacher-form-grid talacher-form-grid-3">
+              <div data-talacher-slot="priority"></div>
+              <div data-talacher-slot="rarity"></div>
+              <div data-talacher-slot="assetType"></div>
+            </div>
+            <p class="talacher-label-sync" data-talacher-label-sync role="status"></p>
+            <fieldset class="talacher-notes" data-talacher-notes hidden>
+              <legend class="talacher-field-label">Write the titles on</legend>
+              <div class="talacher-note-list" data-talacher-note-list></div>
+            </fieldset>
+            <label class="talacher-check" data-talacher-group-option hidden>
+              <input type="checkbox" name="groupOnBoard">
+              <span>
+                <strong>Group the selection on Miro after sending</strong>
+                <small data-talacher-group-hint></small>
+              </span>
             </label>
           </div>
-          <figure class="talacher-image-preview" data-talacher-preview>
-            <figcaption class="talacher-preview-heading">Image preview</figcaption>
-            <div class="talacher-image-preview-frame">
-              <img alt="Selected Miro asset preview" data-talacher-preview-image>
-            </div>
-            <figcaption data-talacher-preview-caption>No uploadable Miro image detected yet.</figcaption>
-          </figure>
         </div>
         <div class="talacher-progress" data-talacher-progress hidden role="status">
           <div class="talacher-progress-track" aria-hidden="true">
@@ -268,6 +224,7 @@ function createMiroSendDialog(getSelectedImage) {
           <p data-talacher-progress-label></p>
         </div>
         <footer class="talacher-dialog-actions">
+          <span class="talacher-shortcut-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send</span>
           <button class="talacher-secondary-button" type="button" data-talacher-cancel>Cancel</button>
           <button class="talacher-primary-button" type="submit">Create monday row</button>
         </footer>
@@ -280,32 +237,91 @@ function createMiroSendDialog(getSelectedImage) {
   const progressBar = dialog.querySelector("[data-talacher-progress-bar]");
   const progressLabel = dialog.querySelector("[data-talacher-progress-label]");
   const firstTitle = form.elements.firstTitle;
+  const secondTitle = form.elements.secondTitle;
   const submitButton = form.querySelector("button[type='submit']");
-  const groupSelect = form.querySelector("[data-talacher-group-select]");
-  const groupKicker = dialog.querySelector(".talacher-dialog-kicker");
+  const summary = dialog.querySelector("[data-talacher-summary]");
   const preview = dialog.querySelector("[data-talacher-preview]");
   const previewImage = dialog.querySelector("[data-talacher-preview-image]");
   const previewCaption = dialog.querySelector("[data-talacher-preview-caption]");
+  const artStatus = dialog.querySelector("[data-talacher-art-status]");
+  const artStatusLabel = dialog.querySelector("[data-talacher-art-status-label]");
+  const artStrip = dialog.querySelector("[data-talacher-art-strip]");
+  const recaptureButton = dialog.querySelector("[data-talacher-recapture]");
+  const labelSyncStatus = dialog.querySelector("[data-talacher-label-sync]");
+  const notesFieldset = dialog.querySelector("[data-talacher-notes]");
+  const noteList = dialog.querySelector("[data-talacher-note-list]");
+  const groupOption = dialog.querySelector("[data-talacher-group-option]");
+  const groupHint = dialog.querySelector("[data-talacher-group-hint]");
+  const pickers = {
+    groupId: createTalacherPicker({ name: "groupId", label: "Group", layer: dialog, placeholder: "Choose a group" }),
+    priority: createTalacherPicker({ name: "priority", label: "Priority", layer: dialog, placeholder: "No priority", emptyLabel: "No priority" }),
+    rarity: createTalacherPicker({ name: "rarity", label: "Rarity", layer: dialog }),
+    assetType: createTalacherPicker({ name: "assetType", label: "Asset type", layer: dialog })
+  };
   let submitWithShift = false;
+  let closeTimer = null;
 
-  const close = () => {
-    dialog.hidden = true;
-    resetProgress();
+  for (const [key, picker] of Object.entries(pickers)) {
+    dialog.querySelector(`[data-talacher-slot="${key}"]`).replaceWith(picker.element);
+  }
+
+  for (const key of ["priority", "rarity", "assetType"]) {
+    pickers[key].setOptions(TALACHER_FALLBACK_LABELS[key].map((label) => ({ value: label, label })), {
+      defaultValue: TALACHER_LABEL_DEFAULTS[key]
+    });
+  }
+
+  pickers.groupId.setOptions([{ value: "group_mm60k55f", label: "CH3 S1 OG Season" }], { defaultValue: "group_mm60k55f" });
+  chrome.storage.local.get("talacherGroupOnBoard")
+    .then(({ talacherGroupOnBoard }) => {
+      form.elements.groupOnBoard.checked = Boolean(talacherGroupOnBoard);
+      form.elements.groupOnBoard.defaultChecked = Boolean(talacherGroupOnBoard);
+    })
+    .catch(() => {});
+
+  const show = () => {
+    clearTimeout(closeTimer);
+    dialog.classList.remove("talacher-dialog-closing");
+    dialog.hidden = false;
   };
 
-  const showToast = (message) => {
+  const close = () => {
+    Object.values(pickers).forEach((picker) => picker.close());
+    captureToken += 1;
+
+    if (dialog.hidden) {
+      resetProgress();
+      return;
+    }
+
+    clearTimeout(closeTimer);
+    dialog.classList.add("talacher-dialog-closing");
+    closeTimer = setTimeout(() => {
+      dialog.hidden = true;
+      dialog.classList.remove("talacher-dialog-closing");
+      resetProgress();
+    }, prefersReducedMotion() ? 0 : 150);
+  };
+
+  const showToast = (message, tone = "success") => {
     clearTimeout(toastTimer);
     toast.textContent = message;
+    toast.classList.remove("talacher-toast-leaving");
+    toast.classList.toggle("talacher-toast-neutral", tone === "neutral");
     toast.hidden = false;
     toastTimer = setTimeout(() => {
-      toast.hidden = true;
+      toast.classList.add("talacher-toast-leaving");
+      toastTimer = setTimeout(() => {
+        toast.hidden = true;
+        toast.classList.remove("talacher-toast-leaving");
+      }, prefersReducedMotion() ? 0 : 180);
     }, 3200);
   };
   const uploadQueue = createMiroUploadQueue(showToast);
 
   const saveReadyTag = async (options = {}) => {
     setProgress("Saving ready tag...", 28, true);
-    dialog.hidden = false;
+    show();
 
     let tagSelection = null;
 
@@ -313,7 +329,7 @@ function createMiroSendDialog(getSelectedImage) {
       tagSelection = await captureMiroSelectionViaClipboard();
     }
 
-    tagSelection = tagSelection || activeSelection || getSelectedImage();
+    tagSelection = tagSelection || await captureFirstSelectedMiroImage() || activeSelection || getPointerSelection();
     const storedTag = await readyTagFromSelection(tagSelection);
 
     if (!storedTag) {
@@ -331,73 +347,355 @@ function createMiroSendDialog(getSelectedImage) {
     return { saved: true };
   };
 
-  const open = async (options = {}) => {
-    activeSelection = getSelectedImage();
-    renderMiroImagePreview(activeSelection, preview, previewImage, previewCaption);
+  const open = (options = {}) => {
     resetProgress();
-    dialog.hidden = false;
-    loadMondayGroups(groupSelect, groupKicker);
+    show();
+    loadMondayGroups(pickers.groupId);
+    loadMondayColumnLabels(pickers, labelSyncStatus);
     setTimeout(() => firstTitle.focus(), 0);
-
-    if (options.preferClipboard) {
-      setProgress("Reading selected Miro image...", 18);
-      const sdkSelection = await captureMiroSelectedImageViaSdk();
-      const clipboardSelection = sdkSelection || await captureMiroSelectionViaClipboard();
-
-      if (clipboardSelection) {
-        activeSelection = clipboardSelection;
-        renderMiroImagePreview(activeSelection, preview, previewImage, previewCaption);
-      }
-
-      resetProgress();
-    }
+    readMiroSelection(options);
   };
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target.closest("[data-talacher-close]")) {
-      event.preventDefault();
-      cancelOrClose();
+  async function readMiroSelection(options = {}) {
+    const token = ++captureToken;
+    activeSelection = null;
+    miroSnapshot = null;
+    previewCache = new Map();
+    artStrip.hidden = true;
+    artStrip.replaceChildren();
+    renderNotes(null);
+    renderGroupOption(null);
+    renderArt(null);
+    setCapturing(true, "Reading your Miro selection...");
+    summary.textContent = "Reading your Miro selection...";
+
+    try {
+      miroSnapshot = await callMiroBridge("TALACHER_MIRO_GET_SELECTION", {}, 3000);
+    } catch {
+      miroSnapshot = null;
+    }
+
+    if (token !== captureToken) {
       return;
     }
 
-    if (event.target.closest("[data-talacher-cancel]")) {
+    if (miroSnapshot) {
+      summary.textContent = describeMiroSnapshot(miroSnapshot);
+      renderNotes(miroSnapshot.notes);
+      renderGroupOption(miroSnapshot);
+
+      if (miroSnapshot.images.length) {
+        renderArtStrip(miroSnapshot.images, token);
+        await selectMiroImage(miroSnapshot.images[0], token);
+        return;
+      }
+    }
+
+    // No image item through the SDK: fall back to Miro's "Copy as image" (context menu only),
+    // then to whatever image element was under the pointer.
+    let fallback = null;
+
+    if (options.preferClipboard) {
+      setCapturing(true, "Copying the selection as an image...");
+      fallback = await captureMiroSelectionViaClipboard();
+    }
+
+    if (token !== captureToken) {
+      return;
+    }
+
+    fallback = fallback || (miroSnapshot ? null : getPointerSelection());
+
+    if (!miroSnapshot) {
+      summary.textContent = fallback
+        ? "Miro's selection details aren't available, so notes can't be picked."
+        : "Couldn't read the Miro selection.";
+    }
+
+    activeSelection = fallback;
+    renderArt(fallback, fallback ? null : miroSnapshot
+      ? "No image in the selection. The row will be created without one."
+      : "No image found. Select an image on the board, then read the selection again.");
+    setCapturing(false);
+  }
+
+  async function selectMiroImage(image, token) {
+    for (const option of artStrip.querySelectorAll("[data-item-id]")) {
+      option.setAttribute("aria-checked", String(option.dataset.itemId === image.id));
+    }
+
+    const attempt = ++imageAttempt;
+    activeSelection = null;
+    renderArt(null);
+    setCapturing(true, "Loading the full-size image...");
+
+    // The small preview arrives fast; show it softened until the original is ready.
+    getMiroPreview(image.id).then((previewUrl) => {
+      if (previewUrl && token === captureToken && attempt === imageAttempt && !activeSelection) {
+        renderArt({ previewUrl }, null, { placeholder: true });
+      }
+    });
+
+    try {
+      const data = await callMiroBridge("TALACHER_MIRO_GET_IMAGE_DATA", { itemId: image.id, format: "original" }, 45000);
+
+      if (token !== captureToken || attempt !== imageAttempt) {
+        return;
+      }
+
+      activeSelection = {
+        previewUrl: data.dataUrl,
+        dataUrl: data.dataUrl,
+        fileName: data.fileName,
+        mimeType: data.mimeType,
+        uploadable: true,
+        source: "miro-web-sdk",
+        itemId: image.id
+      };
+    } catch (error) {
+      if (token !== captureToken || attempt !== imageAttempt) {
+        return;
+      }
+
+      setCapturing(false);
+      renderArt(null, `Couldn't load this image from Miro: ${error.message}`);
+      return;
+    }
+
+    setCapturing(false);
+    renderArt(activeSelection);
+  }
+
+  function getMiroPreview(itemId) {
+    if (!previewCache.has(itemId)) {
+      previewCache.set(itemId, callMiroBridge("TALACHER_MIRO_GET_IMAGE_DATA", { itemId, format: "preview" }, 10000)
+        .then((data) => data.dataUrl)
+        .catch(() => null));
+    }
+
+    return previewCache.get(itemId);
+  }
+
+  function renderArtStrip(images, token) {
+    if (images.length < 2) {
+      return;
+    }
+
+    artStrip.hidden = false;
+    artStrip.replaceChildren(...images.map((image, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "talacher-art-thumb";
+      button.dataset.itemId = image.id;
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(index === 0));
+      button.setAttribute("aria-label", image.title || `Image ${index + 1}`);
+      button.title = image.title || `Image ${index + 1}`;
+      button.append(Object.assign(document.createElement("img"), { alt: "" }));
+      button.addEventListener("click", () => {
+        if (button.getAttribute("aria-checked") !== "true" && token === captureToken) {
+          selectMiroImage(image, token);
+        }
+      });
+      return button;
+    }));
+
+    for (const image of images) {
+      getMiroPreview(image.id).then((previewUrl) => {
+        const img = artStrip.querySelector(`[data-item-id="${CSS.escape(image.id)}"] img`);
+
+        if (img && previewUrl && token === captureToken) {
+          img.src = previewUrl;
+        }
+      });
+    }
+  }
+
+  function renderArt(selection, message = null, { placeholder = false } = {}) {
+    const previewUrl = selection?.previewUrl || selection?.dataUrl || selection?.sourceUrl;
+
+    preview.classList.toggle("talacher-image-preview-empty", !previewUrl);
+    preview.classList.toggle("talacher-art-placeholder", placeholder);
+    previewImage.hidden = !previewUrl;
+
+    if (previewUrl) {
+      previewImage.src = previewUrl;
+    } else {
+      previewImage.removeAttribute("src");
+    }
+
+    recaptureButton.hidden = Boolean(selection?.uploadable) || placeholder;
+
+    if (placeholder) {
+      previewCaption.textContent = "";
+    } else if (message) {
+      previewCaption.textContent = message;
+    } else if (!selection) {
+      previewCaption.textContent = "No image selected.";
+    } else if (selection.uploadable) {
+      previewCaption.textContent = `${selection.fileName} will be uploaded to the row.`;
+    } else {
+      previewCaption.textContent = selection.reason || "Preview found, but Chrome could not read an uploadable file.";
+    }
+  }
+
+  function setCapturing(capturing, label = "") {
+    isCapturing = capturing;
+    artStatus.hidden = !capturing;
+    artStatusLabel.textContent = label;
+    preview.classList.toggle("talacher-art-loading", capturing);
+
+    if (capturing) {
+      previewCaption.textContent = "";
+      recaptureButton.hidden = true;
+    }
+
+    submitButton.disabled = capturing;
+    submitButton.textContent = capturing ? "Loading image..." : "Create monday row";
+  }
+
+  function renderNotes(notes) {
+    noteList.replaceChildren();
+    notesFieldset.hidden = !notes?.length;
+
+    if (!notes?.length) {
+      return;
+    }
+
+    const choices = [...notes, { id: "", text: "Don't write on a note", isNone: true }];
+
+    for (const [index, note] of choices.entries()) {
+      const card = document.createElement("label");
+      card.className = `talacher-note-card${note.isNone ? " talacher-note-card-none" : ""}`;
+
+      if (!note.isNone) {
+        card.style.setProperty("--note", miroNoteColor(note));
+      }
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "miroNoteId";
+      radio.value = note.id;
+      radio.checked = index === 0;
+      radio.defaultChecked = index === 0;
+
+      const text = document.createElement("span");
+      text.className = "talacher-note-text";
+
+      if (note.isNone || !note.text) {
+        text.textContent = note.isNone ? note.text : "Empty note";
+      } else {
+        const [firstLine, ...otherLines] = note.text.split("\n");
+        text.append(Object.assign(document.createElement("strong"), { textContent: firstLine }));
+
+        if (otherLines.length) {
+          text.append(` ${otherLines.join(" ")}`);
+        }
+
+        card.title = note.text;
+      }
+      card.append(radio, Object.assign(document.createElement("span"), { className: "talacher-note-swatch" }), text);
+
+      if (!note.isNone && note.text) {
+        const useText = document.createElement("button");
+        useText.type = "button";
+        useText.className = "talacher-link-button";
+        useText.textContent = "Use as titles";
+        useText.title = "Fill First title and Second title from this note";
+        useText.addEventListener("click", () => {
+          const [first, ...rest] = note.text.split("\n").map((line) => line.trim()).filter(Boolean);
+          firstTitle.value = first || "";
+          secondTitle.value = rest.join(" ");
+          radio.checked = true;
+          firstTitle.focus();
+        });
+        card.append(useText);
+      }
+
+      noteList.append(card);
+    }
+  }
+
+  function renderGroupOption(snapshot) {
+    const canGroup = snapshot && snapshot.itemIds.length > 1 && !snapshot.partlyGrouped;
+    groupOption.hidden = !snapshot || snapshot.itemIds.length < 2;
+    form.elements.groupOnBoard.disabled = !canGroup;
+    groupHint.textContent = !snapshot
+      ? ""
+      : snapshot.alreadyGrouped
+        ? "These items are already grouped."
+        : snapshot.partlyGrouped
+          ? "Some of these items are already in another group, so Miro can't group them."
+          : `Groups the ${snapshot.itemIds.length} selected items once the row is created.`;
+  }
+
+  dialog.addEventListener("click", (event) => {
+    if (event.target.closest("[data-talacher-close]") || event.target.closest("[data-talacher-cancel]")) {
       event.preventDefault();
-      cancelOrClose();
+      close();
     }
   });
 
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      cancelOrClose();
+      close();
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      submitWithShift = event.shiftKey;
+      form.requestSubmit();
     }
   });
 
+  recaptureButton.addEventListener("click", () => readMiroSelection());
+  form.elements.groupOnBoard.addEventListener("change", () => {
+    chrome.storage.local.set({ talacherGroupOnBoard: form.elements.groupOnBoard.checked }).catch(() => {});
+    form.elements.groupOnBoard.defaultChecked = form.elements.groupOnBoard.checked;
+  });
+  form.addEventListener("reset", () => setTimeout(() => Object.values(pickers).forEach((picker) => picker.refresh()), 0));
   submitButton.addEventListener("click", (event) => {
     submitWithShift = event.shiftKey;
   });
 
-  form.addEventListener("submit", async (event) => {
+  form.addEventListener("submit", (event) => {
     event.preventDefault();
 
-    const payload = Object.fromEntries(new FormData(form).entries());
+    if (isCapturing) {
+      return;
+    }
+
+    if (!firstTitle.value.trim()) {
+      firstTitle.focus();
+      firstTitle.classList.add("talacher-input-invalid");
+      setTimeout(() => firstTitle.classList.remove("talacher-input-invalid"), 600);
+      return;
+    }
+
+    const { miroNoteId, groupOnBoard, ...payload } = Object.fromEntries(new FormData(form).entries());
     const isDevSuccess = submitWithShift;
     submitWithShift = false;
-    const noteUpdate = updateSelectedMiroNote(payload)
-      .then((result) => {
-        if (!result.ok && isMissingMiroNoteError(result.error)) {
-          showToast("No post-it note selected. Select the image and note together if you want Talacher to write the titles.");
-        }
+    const snapshot = miroSnapshot;
+    const wantsNote = snapshot ? Boolean(miroNoteId) : true;
+    const noteUpdate = wantsNote
+      ? updateMiroNote(payload, snapshot ? miroNoteId : null)
+        .then((result) => {
+          if (!result.ok && isMissingMiroNoteError(result.error)) {
+            showToast("No post-it note selected. Select the image and note together if you want Talacher to write the titles.", "neutral");
+          }
 
-        return result;
-      })
-      .catch((error) => ({ ok: false, error: error.message }));
+          return result;
+        })
+        .catch((error) => ({ ok: false, error: error.message }))
+      : Promise.resolve({ ok: false, skipped: true });
+    const flightSource = previewImage.hidden ? null : previewImage.getBoundingClientRect();
     const job = uploadQueue.addJob({
       payload,
       selection: activeSelection,
       isDevSuccess,
-      noteUpdate
+      noteUpdate,
+      groupItemIds: groupOnBoard && snapshot && !form.elements.groupOnBoard.disabled ? snapshot.itemIds : null
     });
 
+    flyPreviewToQueue(previewImage, flightSource, job.element.querySelector("[data-talacher-queue-thumb]"));
     close();
     form.reset();
     uploadQueue.startJob(job);
@@ -418,25 +716,113 @@ function createMiroSendDialog(getSelectedImage) {
     progressLabel.textContent = "";
   }
 
-  function cancelOrClose() {
-    close();
-  }
-
   return {
     element: dialog,
     queueElement: uploadQueue.element,
     toastElement: toast,
     saveReadyTag,
-    setSelection(selection) {
-      activeSelection = selection;
-
-      if (!dialog.hidden) {
-        renderMiroImagePreview(activeSelection, preview, previewImage, previewCaption);
-      }
-    },
     open,
     close
   };
+}
+
+function describeMiroSnapshot(snapshot) {
+  const parts = [];
+  const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+  if (snapshot.images.length) {
+    parts.push(plural(snapshot.images.length, "image"));
+  }
+
+  if (snapshot.notes.length) {
+    parts.push(plural(snapshot.notes.length, "note"));
+  }
+
+  const others = snapshot.itemIds.length - snapshot.images.length - snapshot.notes.length;
+
+  if (others > 0) {
+    parts.push(plural(others, "other item"));
+  }
+
+  return parts.length ? `From your Miro selection: ${parts.join(", ")}.` : "Nothing is selected on the Miro board.";
+}
+
+const MIRO_STICKY_COLORS = {
+  gray: "#e6e6e6",
+  light_yellow: "#fff9b1",
+  yellow: "#f5d128",
+  orange: "#ff9d48",
+  light_green: "#d5f692",
+  green: "#c9df56",
+  dark_green: "#93d275",
+  cyan: "#67c6c0",
+  light_pink: "#ffcee0",
+  pink: "#ea94bb",
+  violet: "#c6a2d2",
+  red: "#f0939d",
+  light_blue: "#a6ccf5",
+  blue: "#6cd8fa",
+  dark_blue: "#9ea9ff",
+  black: "#000000",
+  white: "#ffffff"
+};
+
+function miroNoteColor(note) {
+  if (/^#[0-9a-f]{3,8}$/i.test(note.color || "")) {
+    return note.color;
+  }
+
+  return MIRO_STICKY_COLORS[note.color] || (note.type === "sticky_note" ? MIRO_STICKY_COLORS.light_yellow : "#ffffff");
+}
+
+// Talks to miro-page-bridge.js, which runs in Miro's page and can use the Web SDK.
+function callMiroBridge(type, payload = {}, timeoutMs = 3000) {
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-${type}-${Date.now()}-${Math.random()}`;
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Miro didn't respond in time."));
+    }, timeoutMs);
+
+    function onMessage(event) {
+      if (event.source !== window || event.data?.type !== `${type}_RESULT` || event.data.requestId !== requestId) {
+        return;
+      }
+
+      cleanup();
+
+      if (event.data.ok) {
+        resolve(event.data.result);
+      } else {
+        reject(new Error(event.data.error || "Miro request failed."));
+      }
+    }
+
+    function cleanup() {
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+    }
+
+    window.addEventListener("message", onMessage);
+    window.postMessage({ type, requestId, payload }, window.location.origin);
+  });
+}
+
+async function captureFirstSelectedMiroImage() {
+  try {
+    const snapshot = await callMiroBridge("TALACHER_MIRO_GET_SELECTION", {}, 3000);
+    const image = snapshot.images[0];
+
+    if (!image) {
+      return null;
+    }
+
+    const data = await callMiroBridge("TALACHER_MIRO_GET_IMAGE_DATA", { itemId: image.id, format: "original" }, 45000);
+    return { ...data, previewUrl: data.dataUrl, uploadable: true, source: "miro-web-sdk" };
+  } catch {
+    return null;
+  }
 }
 
 function createMiroUploadQueue(showToast) {
@@ -448,7 +834,7 @@ function createMiroUploadQueue(showToast) {
   queue.hidden = true;
   queue.innerHTML = `
     <header class="talacher-queue-header">
-      <button class="talacher-queue-toggle" type="button" data-talacher-queue-toggle>
+      <button class="talacher-queue-toggle" type="button" aria-expanded="true" data-talacher-queue-toggle>
         <span>Talacher queue</span>
         <strong data-talacher-queue-count>0</strong>
       </button>
@@ -464,9 +850,30 @@ function createMiroUploadQueue(showToast) {
   const toggle = queue.querySelector("[data-talacher-queue-toggle]");
   const clearDone = queue.querySelector("[data-talacher-queue-clear]");
 
+  const body = queue.querySelector("[data-talacher-queue-body]");
+  let bodyAnimation = null;
   toggle.addEventListener("click", () => {
     isCollapsed = !isCollapsed;
     queue.classList.toggle("talacher-upload-queue-collapsed", isCollapsed);
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    bodyAnimation?.cancel();
+
+    if (prefersReducedMotion() || typeof body.animate !== "function") {
+      body.hidden = isCollapsed;
+      return;
+    }
+
+    body.hidden = false;
+    const height = `${body.scrollHeight}px`;
+    bodyAnimation = body.animate(
+      isCollapsed ? [{ height }, { height: "0px" }] : [{ height: "0px" }, { height }],
+      { duration: 220, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" }
+    );
+    bodyAnimation.finished
+      .then(() => {
+        body.hidden = isCollapsed;
+      })
+      .catch(() => {});
   });
 
   clearDone.addEventListener("click", () => {
@@ -480,7 +887,7 @@ function createMiroUploadQueue(showToast) {
     refreshQueue();
   });
 
-  function addJob({ payload, selection, isDevSuccess, noteUpdate }) {
+  function addJob({ payload, selection, isDevSuccess, noteUpdate, groupItemIds = null }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : `talacher-job-${Date.now()}-${jobs.size}`;
     const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-request-${Date.now()}-${jobs.size}`;
     const previewUrl = selection?.previewUrl || selection?.dataUrl || selection?.sourceUrl || "";
@@ -524,6 +931,7 @@ function createMiroUploadQueue(showToast) {
       isDevSuccess,
       noteUpdate,
       noteResult: null,
+      groupItemIds,
       cancelled: false,
       status: "queued",
       element,
@@ -533,6 +941,11 @@ function createMiroUploadQueue(showToast) {
     };
 
     cancelButton.addEventListener("click", () => cancelJob(job));
+    job.statusNode.addEventListener("click", () => {
+      if (job.status === "error") {
+        job.statusNode.classList.toggle("talacher-queue-status-expanded");
+      }
+    });
     jobs.set(id, job);
     list.prepend(element);
     queue.hidden = false;
@@ -557,14 +970,10 @@ function createMiroUploadQueue(showToast) {
 
       if (job.isDevSuccess) {
         updateJob(job, "running", "Dev success route...", 58, true);
-        const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
         throwIfQueueCancelled(job);
-        const noteResult = await resolveQueueNoteUpdate(job);
-        updateJob(job, "done", buildQueueDoneLabel("Dev success", readyTagCopied, noteResult), 100);
-        showToast(buildSuccessToast("Dev success", {
-          readyTagCopied,
-          noteResult
-        }));
+        const details = await finishOnMiro(job);
+        updateJob(job, "done", buildQueueDoneLabel("Dev success", details), 100);
+        showToast(buildSuccessToast("Dev success", details));
         return;
       }
 
@@ -578,27 +987,35 @@ function createMiroUploadQueue(showToast) {
       });
       throwIfQueueCancelled(job);
 
-      updateJob(job, "running", "Finalizing Miro board...", 86);
-      const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
-      const noteResult = await resolveQueueNoteUpdate(job);
+      updateJob(job, "running", "Finishing on the Miro board...", 86);
+      const details = await finishOnMiro(job);
       const baseMessage = response.asset?.url
         ? `Created row and uploaded image: ${response.item.name}`
         : `Created monday row: ${response.item.name}`;
 
-      updateJob(job, "done", buildQueueDoneLabel(response.item.name, readyTagCopied, noteResult), 100);
-      showToast(buildSuccessToast(baseMessage, {
-        readyTagCopied,
-        noteResult
-      }));
+      updateJob(job, "done", buildQueueDoneLabel(response.item.name, details), 100);
+      showToast(buildSuccessToast(baseMessage, details));
     } catch (error) {
       if (job.cancelled || error.message === "Cancelled.") {
         updateJob(job, "cancelled", "Cancelled. A row may exist if monday already created it.", 100);
-        showToast("Cancelled monday send. A row may exist if monday already created it.");
+        showToast("Cancelled monday send. A row may exist if monday already created it.", "neutral");
         return;
       }
 
       updateJob(job, "error", error.message || "Upload failed.", 100);
     }
+  }
+
+  async function finishOnMiro(job) {
+    const readyTagCopied = await copyReadyTagToClipboard().catch(() => false);
+    const noteResult = await resolveQueueNoteUpdate(job);
+    const groupResult = job.groupItemIds
+      ? await callMiroBridge("TALACHER_MIRO_GROUP_ITEMS", { itemIds: job.groupItemIds }, 6000)
+        .then((result) => ({ ok: result.grouped, ...result }))
+        .catch((error) => ({ ok: false, error: error.message }))
+      : null;
+
+    return { readyTagCopied, noteResult, groupResult };
   }
 
   async function resolveQueueNoteUpdate(job) {
@@ -631,6 +1048,7 @@ function createMiroUploadQueue(showToast) {
     job.element.className = `talacher-queue-item talacher-queue-item-${status}`;
     job.element.classList.toggle("talacher-queue-item-indeterminate", indeterminate);
     job.statusNode.textContent = label;
+    job.statusNode.title = status === "error" ? `${label}\n\nClick to expand.` : "";
     job.progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
     job.cancelButton.disabled = isTerminalQueueStatus(status) || status === "cancelling";
     job.cancelButton.hidden = isTerminalQueueStatus(status);
@@ -643,6 +1061,11 @@ function createMiroUploadQueue(showToast) {
     count.textContent = runningCount ? `${runningCount}/${jobList.length}` : String(jobList.length);
     clearDone.disabled = !jobList.some((job) => isTerminalQueueStatus(job.status));
     queue.hidden = jobList.length === 0;
+    requestAnimationFrame(() => {
+      const maxHeight = parseFloat(getComputedStyle(list).maxHeight) || Infinity;
+      const contentHeight = [...list.children].reduce((total, item) => total + item.getBoundingClientRect().height, 0);
+      list.classList.toggle("talacher-queue-list-scrollable", contentHeight > maxHeight + 1);
+    });
   }
 
   return {
@@ -659,7 +1082,7 @@ function formatQueueTitle(payload) {
     .join(" ") || "Untitled item";
 }
 
-function buildQueueDoneLabel(itemName, readyTagCopied, noteResult) {
+function buildQueueDoneLabel(itemName, { readyTagCopied, noteResult, groupResult }) {
   const details = [];
 
   if (readyTagCopied) {
@@ -668,6 +1091,10 @@ function buildQueueDoneLabel(itemName, readyTagCopied, noteResult) {
 
   if (noteResult?.ok) {
     details.push("note updated");
+  }
+
+  if (groupResult?.ok) {
+    details.push("grouped on board");
   }
 
   return details.length ? `Done: ${itemName} (${details.join(", ")})` : `Done: ${itemName}`;
@@ -687,23 +1114,31 @@ function isMissingMiroNoteError(error) {
   return /no selected miro sticky note|no selected.*text item/i.test(String(error || ""));
 }
 
-function buildSuccessToast(baseMessage, details) {
+function buildSuccessToast(baseMessage, { readyTagCopied, noteResult, groupResult }) {
   const parts = [baseMessage];
 
-  if (details.readyTagCopied) {
+  if (readyTagCopied) {
     parts.push("Ready tag copied.");
   }
 
-  if (details.noteResult?.ok) {
+  if (noteResult?.ok) {
     parts.push("Miro note updated.");
-  } else if (details.noteResult?.error) {
-    parts.push(`Miro note not updated: ${details.noteResult.error}`);
+  } else if (noteResult?.error && !noteResult.skipped) {
+    parts.push(`Miro note not updated: ${noteResult.error}`);
   }
 
-  return `${parts.join(" ")}.`;
+  if (groupResult?.ok) {
+    parts.push("Grouped on the board.");
+  } else if (groupResult?.error) {
+    parts.push(`Not grouped: ${groupResult.error}`);
+  }
+
+  return parts
+    .map((part) => (/[.!?]$/.test(part) ? part : `${part}.`))
+    .join(" ");
 }
 
-function updateSelectedMiroNote(payload) {
+function updateMiroNote(payload, itemId = null) {
   const noteText = [payload.firstTitle, payload.secondTitle]
     .map((value) => value?.trim())
     .filter(Boolean)
@@ -718,35 +1153,11 @@ function updateSelectedMiroNote(payload) {
     .map(escapeHtml)
     .map((line) => `<p>${line}</p>`)
     .join("");
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-miro-note-${Date.now()}`;
 
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      window.removeEventListener("message", handleResult);
-      resolve({ ok: false, error: "Miro note update timed out." });
-    }, 2200);
-
-    function handleResult(event) {
-      if (
-        event.source !== window ||
-        event.data?.type !== "TALACHER_UPDATE_SELECTED_MIRO_NOTE_RESULT" ||
-        event.data.requestId !== requestId
-      ) {
-        return;
-      }
-
-      clearTimeout(timeout);
-      window.removeEventListener("message", handleResult);
-      resolve(event.data);
-    }
-
-    window.addEventListener("message", handleResult);
-    window.postMessage({
-      type: "TALACHER_UPDATE_SELECTED_MIRO_NOTE",
-      requestId,
-      contentHtml
-    }, window.location.origin);
-  });
+  // Without an itemId the bridge falls back to the first selected note.
+  return callMiroBridge("TALACHER_MIRO_UPDATE_NOTE", { itemId, contentHtml }, 4000)
+    .then((result) => ({ ok: true, ...result }))
+    .catch((error) => ({ ok: false, error: error.message }));
 }
 
 function escapeHtml(value) {
@@ -888,7 +1299,13 @@ async function captureMiroSelectionViaClipboard() {
     activateMiroMenuItem(copyAsImageItem);
     await wait(350);
 
-    const items = await navigator.clipboard.read();
+    // clipboard.read() can hang (e.g. waiting on a permission prompt), so cap it.
+    const items = await Promise.race([
+      navigator.clipboard.read(),
+      wait(4000).then(() => {
+        throw new Error("Timed out reading the clipboard.");
+      })
+    ]);
 
     for (const item of items) {
       const imageType = item.types.find((type) => type.startsWith("image/"));
@@ -920,37 +1337,6 @@ async function captureMiroSelectionViaClipboard() {
   }
 
   return null;
-}
-
-function captureMiroSelectedImageViaSdk() {
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-miro-image-${Date.now()}`;
-
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      window.removeEventListener("message", handleResult);
-      resolve(null);
-    }, 2200);
-
-    function handleResult(event) {
-      if (
-        event.source !== window ||
-        event.data?.type !== "TALACHER_GET_SELECTED_MIRO_IMAGE_RESULT" ||
-        event.data.requestId !== requestId
-      ) {
-        return;
-      }
-
-      clearTimeout(timeout);
-      window.removeEventListener("message", handleResult);
-      resolve(event.data.ok ? event.data.image : null);
-    }
-
-    window.addEventListener("message", handleResult);
-    window.postMessage({
-      type: "TALACHER_GET_SELECTED_MIRO_IMAGE",
-      requestId
-    }, window.location.origin);
-  });
 }
 
 function activateMiroMenuItem(item) {
@@ -1047,6 +1433,13 @@ function extractMiroImageFromElement(element) {
 
 function imageCandidateFromNode(node) {
   if (node instanceof HTMLCanvasElement) {
+    // Miro draws the whole board into one big canvas; that is never "the selected image".
+    const rect = node.getBoundingClientRect();
+
+    if (rect.width * rect.height > window.innerWidth * window.innerHeight * 0.25) {
+      return null;
+    }
+
     try {
       const dataUrl = node.toDataURL("image/png");
 
@@ -1165,29 +1558,103 @@ function sendTalacherMessage(message) {
   });
 }
 
-async function loadMondayGroups(select, kicker) {
+async function loadMondayGroups(picker) {
   try {
-    const settings = await sendTalacherMessage({ type: "TALACHER_GET_SETTINGS" });
-    const groups = settings.groups?.length
-      ? settings.groups
-      : [{ id: settings.config.groupId, title: settings.config.groupTitle }];
+    const { groups, groupId } = await sendTalacherMessage({ type: "TALACHER_GET_GROUPS" });
 
-    select.replaceChildren(...groups.map((group) => {
-      const option = document.createElement("option");
-      option.value = group.id;
-      option.textContent = group.title;
-      return option;
-    }));
-
-    const selectedGroup = groups.find((group) => group.id === settings.config.groupId) || groups[0];
-    select.value = selectedGroup.id;
-    kicker.textContent = selectedGroup.title;
-    select.onchange = () => {
-      kicker.textContent = groups.find((group) => group.id === select.value)?.title || "monday group";
-    };
+    if (groups?.length) {
+      picker.setOptions(groups.map((group) => ({ value: group.id, label: group.title, color: group.color })), {
+        defaultValue: groupId
+      });
+      picker.setValue(groupId);
+    }
   } catch {
-    kicker.textContent = "CH3 S1 OG Season";
+    // Keep the current group list.
   }
+}
+
+async function loadMondayColumnLabels(pickers, status) {
+  status.classList.remove("talacher-label-sync-error");
+  status.textContent = "Loading options from the monday board...";
+
+  try {
+    const columns = await sendTalacherMessage({ type: "TALACHER_GET_COLUMN_LABELS" });
+    const keys = ["priority", "assetType", "rarity"].filter((key) => columns?.[key]?.labels?.length);
+
+    if (!keys.length) {
+      throw new Error("The board returned no labels for Priority, Asset Type or Rarity.");
+    }
+
+    // Same order and colors as the label picker on the monday board.
+    for (const key of keys) {
+      pickers[key].setOptions(columns[key].labels.map((label) => ({
+        value: label.label,
+        label: label.label,
+        color: label.color
+      })), { defaultValue: TALACHER_LABEL_DEFAULTS[key] });
+    }
+
+    status.textContent = "";
+  } catch (error) {
+    // Keep the built-in options, but say so: a stale list is what causes "label has been deactivated".
+    status.classList.add("talacher-label-sync-error");
+    status.textContent = /context invalidated/i.test(error.message)
+      ? "Talacher was updated. Refresh this Miro tab to load the board's current options."
+      : `Couldn't load the board's current options, so this list may be out of date. ${error.message}`;
+  }
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+}
+
+function flyPreviewToQueue(sourceImage, from, targetThumb) {
+  const targetImage = targetThumb?.querySelector("img");
+  const queuePanel = targetThumb?.closest(".talacher-upload-queue");
+
+  if (!from?.width || !targetImage || !queuePanel || queuePanel.classList.contains("talacher-upload-queue-collapsed")
+    || prefersReducedMotion() || typeof Element.prototype.animate !== "function") {
+    return;
+  }
+
+  // Settle the panel's own entrance first so the landing spot doesn't move mid-flight.
+  queuePanel.getAnimations().forEach((animation) => animation.finish());
+  const to = targetThumb.getBoundingClientRect();
+  const ghost = document.createElement("img");
+  ghost.className = "talacher-root talacher-send-ghost";
+  ghost.alt = "";
+  ghost.src = sourceImage.currentSrc || sourceImage.src;
+  Object.assign(ghost.style, {
+    left: `${from.left}px`,
+    top: `${from.top}px`,
+    width: `${from.width}px`,
+    height: `${from.height}px`
+  });
+  targetThumb.classList.add("talacher-queue-thumb-awaiting");
+  document.documentElement.append(ghost);
+
+  let landed = false;
+  const land = () => {
+    if (landed) {
+      return;
+    }
+
+    landed = true;
+    ghost.remove();
+    targetThumb.classList.remove("talacher-queue-thumb-awaiting");
+    targetThumb.classList.add("talacher-queue-thumb-landed");
+  };
+
+  // Never leave the ghost on screen, even if the animation is throttled or never finishes.
+  setTimeout(land, 900);
+  ghost.animate([
+    { left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: "6px", opacity: 1 },
+    { left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, borderRadius: "6px", opacity: 0.85 }
+  ], {
+    duration: 520,
+    easing: "cubic-bezier(0.5, 0, 0.2, 1)",
+    fill: "forwards"
+  }).finished.then(land, land);
 }
 
 function stopMiroActionEvent(event) {
@@ -1386,15 +1853,15 @@ function initializeMondayHoverPreview() {
   preview.className = "talacher-root talacher-monday-preview";
   preview.hidden = true;
   preview.innerHTML = `
-    <div class="talacher-preview-loading-panel" data-talacher-monday-preview-loading>
+    <div class="talacher-preview-loading-panel" data-talacher-monday-preview-loading="true">
       <strong>Loading preview</strong>
-      <span data-talacher-monday-preview-loading-status>Checking image source...</span>
+      <span data-talacher-monday-preview-loading-status="true">Checking image source...</span>
       <div class="talacher-preview-loading-bar" aria-hidden="true"></div>
     </div>
     <div class="talacher-preview-frame">
-      <img alt="" data-talacher-monday-preview-image>
+      <img alt="" data-talacher-monday-preview-image="true" />
     </div>
-    <p class="talacher-preview-caption" data-talacher-monday-preview-caption></p>
+    <p class="talacher-preview-caption" data-talacher-monday-preview-caption="true"></p>
   `;
   const previewLoading = preview.querySelector("[data-talacher-monday-preview-loading]");
   const previewLoadingStatus = preview.querySelector("[data-talacher-monday-preview-loading-status]");
@@ -1525,9 +1992,9 @@ function initializeMondayHoverPreview() {
       imageMode: previewImageMode
     }, imageCache)
       .then(async (state) => {
-        const imageSize = state.imageUrl
-          ? await preloadMondayPreviewAsset(state.imageUrl, previewAssetCache)
-          : null;
+        const previewAsset = state.imageUrl
+          ? await resolveMondayPreviewAsset(state, previewAssetCache)
+          : { state, imageSize: null };
         const remainingDelay = Math.max(0, previewDelayMs - (performance.now() - startedAt));
 
         if (remainingDelay > 0) {
@@ -1538,12 +2005,12 @@ function initializeMondayHoverPreview() {
           return;
         }
 
-        if (!state.imageUrl) {
+        if (!previewAsset.state.imageUrl) {
           hidePreview();
           return;
         }
 
-        renderPreview(state, imageSize, previewPoint);
+        renderPreview(previewAsset.state, previewAsset.imageSize, previewPoint);
       })
       .catch(() => {
         if (activeHoverToken === hoverToken && activeRow === row) {
@@ -1760,6 +2227,45 @@ function getMondayPreviewCacheKey(rowRef) {
   return `${rowRef.imageMode || "legacy"}:${rowRef.itemId || rowRef.imageUrl || `name:${rowRef.itemName}`}`;
 }
 
+async function resolveMondayPreviewAsset(state, cache) {
+  const patchedUrl = getRegularMondayResourceUrl(state.imageUrl);
+
+  if (patchedUrl && patchedUrl !== state.imageUrl) {
+    try {
+      const imageSize = await preloadMondayPreviewAsset(patchedUrl, cache);
+      return {
+        state: {
+          ...state,
+          imageUrl: patchedUrl,
+          fallbackImageUrl: state.imageUrl
+        },
+        imageSize
+      };
+    } catch {
+      // Fall back to the URL stored in monday if the regular resource URL is unavailable.
+    }
+  }
+
+  return {
+    state,
+    imageSize: await preloadMondayPreviewAsset(state.imageUrl, cache)
+  };
+}
+
+function getRegularMondayResourceUrl(url) {
+  if (!url || !/\/resources\/[^/]+\/thumb_small-/i.test(url)) {
+    return url || "";
+  }
+
+  try {
+    const parsed = new URL(url);
+    parsed.pathname = parsed.pathname.replace(/(\/resources\/[^/]+\/)thumb_small-/i, "$1");
+    return parsed.toString();
+  } catch {
+    return String(url).replace(/(\/resources\/[^/]+\/)thumb_small-/i, "$1");
+  }
+}
+
 function preloadMondayPreviewAsset(imageUrl, cache) {
   if (cache.has(imageUrl)) {
     return cache.get(imageUrl);
@@ -1876,3 +2382,24 @@ function formatMondayPreviewCaption(itemName, secondTitle) {
     .filter(Boolean)
     .join(" ");
 }
+
+// Runs last so every top-level const above is initialized before setup uses it.
+(function initializeTalacherContentScript() {
+  const host = window.location.hostname;
+  const isMiro = host === "miro.com" || host.endsWith(".miro.com");
+  const isMonday = host === "monday.com" || host.endsWith(".monday.com");
+
+  if (window.__talacherContentScriptLoaded) {
+    return;
+  }
+
+  window.__talacherContentScriptLoaded = true;
+
+  if (isMiro) {
+    initializeMiroTestAction();
+  }
+
+  if (isMonday) {
+    initializeMondayHoverPreview();
+  }
+})();
