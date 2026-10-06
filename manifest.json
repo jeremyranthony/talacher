@@ -37,6 +37,7 @@
       ],
       "js": [
         "content-picker.js",
+        "content-naming.js",
         "content.js"
       ],
       "css": [
@@ -53,6 +54,8 @@
     "https://*.mirostatic.com/*",
     "https://*.amazonaws.com/*",
     "https://monday.com/*",
-    "https://*.monday.com/*"
+    "https://*.monday.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.groq.com/*"
   ]
 }

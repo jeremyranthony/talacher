@@ -309,6 +309,7 @@ function createTalacherPicker({
       input.value = option?.value ?? (emptyLabel === null ? input.value : "");
       renderValue();
     },
+    getOptions: () => options.slice(),
     // Re-reads the hidden input, e.g. after form.reset().
     refresh: renderValue,
     close: () => close({ focusTrigger: false })
@@ -319,6 +320,19 @@ function createTalacherChip(option) {
   const chip = document.createElement("span");
   chip.className = "talacher-chip";
   chip.textContent = option.label;
+
+  if (option.person) {
+    // People show a photo (or initials) before the name.
+    chip.classList.add("talacher-chip-person");
+    const avatar = option.avatar
+      ? Object.assign(document.createElement("img"), { src: option.avatar, alt: "" })
+      : Object.assign(document.createElement("span"), {
+        textContent: option.label.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase()
+      });
+    avatar.className = "talacher-chip-avatar";
+    chip.prepend(avatar);
+    return chip;
+  }
 
   if (option.isEmpty) {
     chip.classList.add("talacher-chip-empty");

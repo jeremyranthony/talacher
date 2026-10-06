@@ -8,6 +8,7 @@ function initializeMiroTestAction() {
   const menuAction = createMiroMenuAction(() => dialog.open({ preferClipboard: true }));
   const toolbarAction = createMiroToolbarAction(dialog.open);
   document.documentElement.append(dialog.element);
+  document.documentElement.append(dialog.namingElement);
   document.documentElement.append(dialog.queueElement);
   document.documentElement.append(dialog.toastElement);
   document.documentElement.append(fallback);
@@ -186,16 +187,26 @@ function createMiroSendDialog(getPointerSelection) {
             </p>
           </section>
           <div class="talacher-form-fields" data-talacher-fields>
-            <div data-talacher-slot="groupId"></div>
             <div class="talacher-form-grid">
-              <label class="talacher-field">
-                <span class="talacher-field-label">First title</span>
-                <input name="firstTitle" type="text" autocomplete="off" required>
-              </label>
-              <label class="talacher-field">
-                <span class="talacher-field-label">Second title</span>
-                <input name="secondTitle" type="text" autocomplete="off">
-              </label>
+              <div data-talacher-slot="groupId"></div>
+              <div data-talacher-slot="artistId"></div>
+            </div>
+            <div class="talacher-titles">
+              <div class="talacher-form-grid">
+                <label class="talacher-field">
+                  <span class="talacher-field-label">First title <small class="talacher-field-badge" data-talacher-titles-source hidden>from note</small></span>
+                  <input name="firstTitle" type="text" autocomplete="off" required>
+                </label>
+                <label class="talacher-field">
+                  <span class="talacher-field-label">Second title</span>
+                  <input name="secondTitle" type="text" autocomplete="off">
+                </label>
+              </div>
+              <button type="button" class="talacher-ai-button" data-talacher-ai-open>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.6 4.2 4.4 1.3-4.4 1.3L8 12.5 6.4 8.3 2 7l4.4-1.3zM13 11l.6 1.4 1.4.6-1.4.6L13 15l-.6-1.4L11 13l1.4-.6z" fill="currentColor"/></svg>
+                Suggest names
+              </button>
+              <div class="talacher-name-check" data-talacher-name-check role="status" hidden></div>
             </div>
             <input name="status" type="hidden" value="Ready To Start">
             <div class="talacher-form-grid talacher-form-grid-3">
@@ -256,7 +267,8 @@ function createMiroSendDialog(getPointerSelection) {
     groupId: createTalacherPicker({ name: "groupId", label: "Group", layer: dialog, placeholder: "Choose a group" }),
     priority: createTalacherPicker({ name: "priority", label: "Priority", layer: dialog, placeholder: "No priority", emptyLabel: "No priority" }),
     rarity: createTalacherPicker({ name: "rarity", label: "Rarity", layer: dialog }),
-    assetType: createTalacherPicker({ name: "assetType", label: "Asset type", layer: dialog })
+    assetType: createTalacherPicker({ name: "assetType", label: "Asset type", layer: dialog }),
+    artistId: createTalacherPicker({ name: "artistId", label: "Artist", layer: dialog, placeholder: "Unassigned", emptyLabel: "Unassigned" })
   };
   let submitWithShift = false;
   let closeTimer = null;
@@ -272,6 +284,34 @@ function createMiroSendDialog(getPointerSelection) {
   }
 
   pickers.groupId.setOptions([{ value: "group_mm60k55f", label: "CH3 S1 OG Season" }], { defaultValue: "group_mm60k55f" });
+  pickers.artistId.setOptions([], { defaultValue: "" });
+
+  const nameCheck = dialog.querySelector("[data-talacher-name-check]");
+  const titlesSource = dialog.querySelector("[data-talacher-titles-source]");
+  const autoTypeBadge = Object.assign(document.createElement("small"), {
+    className: "talacher-field-badge",
+    textContent: "auto",
+    hidden: true
+  });
+  pickers.assetType.element.querySelector(".talacher-field-label").append(" ", autoTypeBadge);
+  let boardTitlesPromise = null;
+  let nameCheckTimer = null;
+  let nameCheckToken = 0;
+  // Set once the user picks an Asset type themselves; auto-detection then leaves it alone.
+  let assetTypeLocked = false;
+
+  pickers.assetType.input.addEventListener("change", () => {
+    assetTypeLocked = true;
+    autoTypeBadge.hidden = true;
+  });
+
+  for (const field of [firstTitle, secondTitle]) {
+    field.addEventListener("input", () => {
+      titlesSource.hidden = true;
+      scheduleTitleChecks();
+    });
+  }
+
   chrome.storage.local.get("talacherGroupOnBoard")
     .then(({ talacherGroupOnBoard }) => {
       form.elements.groupOnBoard.checked = Boolean(talacherGroupOnBoard);
@@ -318,6 +358,30 @@ function createMiroSendDialog(getPointerSelection) {
     }, 3200);
   };
   const uploadQueue = createMiroUploadQueue(showToast);
+  const namingModal = createTalacherNamingModal({
+    onUse(suggestion) {
+      firstTitle.value = suggestion.firstTitle;
+      secondTitle.value = suggestion.secondTitle;
+      const assetLabel = mapItemTypeToAssetLabel(suggestion.itemType, pickers.assetType.getOptions().map((option) => option.value));
+
+      if (assetLabel) {
+        pickers.assetType.setValue(assetLabel);
+        assetTypeLocked = true;
+        autoTypeBadge.hidden = true;
+      }
+
+      titlesSource.hidden = true;
+      scheduleTitleChecks();
+
+      for (const field of [firstTitle, secondTitle]) {
+        field.classList.remove("talacher-input-filled");
+        void field.offsetWidth;
+        field.classList.add("talacher-input-filled");
+      }
+
+      firstTitle.focus();
+    }
+  });
 
   const saveReadyTag = async (options = {}) => {
     setProgress("Saving ready tag...", 28, true);
@@ -350,11 +414,159 @@ function createMiroSendDialog(getPointerSelection) {
   const open = (options = {}) => {
     resetProgress();
     show();
+    assetTypeLocked = false;
+    autoTypeBadge.hidden = true;
+    titlesSource.hidden = true;
+    nameCheck.hidden = true;
+    boardTitlesPromise = null;
     loadMondayGroups(pickers.groupId);
-    loadMondayColumnLabels(pickers, labelSyncStatus);
+    loadMondayArtists(pickers.artistId);
+    // Labels must be loaded before a detected type can be mapped onto them.
+    loadMondayColumnLabels(pickers, labelSyncStatus).then(() => applyDetectedType());
     setTimeout(() => firstTitle.focus(), 0);
     readMiroSelection(options);
   };
+
+  function scheduleTitleChecks() {
+    clearTimeout(nameCheckTimer);
+    nameCheckTimer = setTimeout(() => {
+      applyDetectedType();
+      runNameCheck();
+    }, 450);
+  }
+
+  // Fills empty titles from the selection: an item spec ("FirstTitle: ...") wins, else the note's lines.
+  function applyNoteDetection(notes) {
+    const specNote = notes.find((note) => note.spec?.secondTitle || note.spec?.firstTitle);
+    const source = specNote || (notes.length === 1 ? notes[0] : null);
+
+    if (source && !firstTitle.value.trim() && !secondTitle.value.trim()) {
+      const titles = specNote
+        ? { first: specNote.spec.firstTitle || "", second: specNote.spec.secondTitle || "" }
+        : titlesFromNoteText(source.text);
+      firstTitle.value = titles.first;
+      secondTitle.value = titles.second;
+      titlesSource.hidden = !(titles.first || titles.second);
+      titlesSource.textContent = specNote ? "from item spec" : "from note";
+    }
+
+    if (specNote?.spec?.rarity) {
+      pickers.rarity.setValue(specNote.spec.rarity);
+    }
+
+    scheduleTitleChecks();
+  }
+
+  function applyDetectedType() {
+    if (assetTypeLocked) {
+      return;
+    }
+
+    const specType = miroSnapshot?.notes?.find((note) => note.spec?.itemType)?.spec.itemType;
+    const detection = detectItemType({
+      specType,
+      texts: [secondTitle.value, firstTitle.value, ...(miroSnapshot?.notes || []).map((note) => note.text), ...(miroSnapshot?.images || []).map((image) => image.title)]
+    });
+    const labels = pickers.assetType.getOptions().map((option) => option.value);
+    const label = detection
+      ? detection.assetLabel || mapItemTypeToAssetLabel(detection.itemType, labels)
+      : null;
+
+    if (label && labels.includes(label)) {
+      pickers.assetType.setValue(label);
+      autoTypeBadge.hidden = false;
+      autoTypeBadge.title = detection.keyword ? `Detected from "${detection.keyword}"` : "From the item spec";
+    }
+  }
+
+  async function runNameCheck() {
+    const token = ++nameCheckToken;
+    const first = firstTitle.value.trim();
+    const second = secondTitle.value.trim();
+
+    if (!first && !second) {
+      nameCheck.hidden = true;
+      return;
+    }
+
+    renderNameCheck({ loading: true });
+    const selectedIds = new Set(miroSnapshot?.itemIds || []);
+    const [boardRecords, studioIndex, mondayRows] = await Promise.all([
+      boardTitlesPromise || Promise.resolve(null),
+      loadNamingIndex(),
+      first
+        ? sendTalacherMessage({ type: "TALACHER_FIND_MONDAY_TITLES", titles: { firstTitle: first, secondTitle: second } }).catch(() => null)
+        : Promise.resolve([])
+    ]);
+
+    if (token !== nameCheckToken) {
+      return;
+    }
+
+    const records = [
+      ...(boardRecords || []).filter((record) => !selectedIds.has(record.id)).map((record) => ({ ...record, source: "miro" })),
+      ...studioIndex.map((record) => ({ ...record, source: "studio" })),
+      ...(mondayRows || []).map((record) => ({ ...record, source: "monday" }))
+    ];
+    renderNameCheck({
+      ...compareItemTitles({ first, second }, records),
+      checked: [boardRecords && "Miro", studioIndex.length && "Studio", mondayRows && "monday"].filter(Boolean)
+    });
+  }
+
+  function renderNameCheck({ loading, exact = [], similar = [], checked = [] }) {
+    nameCheck.hidden = false;
+    nameCheck.className = "talacher-name-check";
+    nameCheck.replaceChildren();
+
+    if (loading) {
+      nameCheck.classList.add("talacher-name-check-loading");
+      nameCheck.append(Object.assign(document.createElement("span"), { textContent: "Checking existing names..." }));
+      return;
+    }
+
+    if (exact.length) {
+      nameCheck.classList.add("talacher-name-check-exact");
+      nameCheck.append(Object.assign(document.createElement("strong"), { textContent: "Already exists" }), ...exact.slice(0, 4).map(createMatchChip));
+    } else if (similar.length) {
+      nameCheck.classList.add("talacher-name-check-similar");
+      nameCheck.append(Object.assign(document.createElement("strong"), { textContent: "Similar" }), ...similar.map(createMatchChip));
+    } else {
+      nameCheck.classList.add("talacher-name-check-clear");
+      nameCheck.append(Object.assign(document.createElement("span"), {
+        textContent: checked.length ? `New name: no match on ${checked.join(", ")}.` : "New name."
+      }));
+    }
+  }
+
+  function createMatchChip(match) {
+    const sourceLabel = { miro: "Miro", studio: "Studio", monday: "monday" }[match.source];
+    const canOpen = match.source === "miro" || (match.source === "monday" && match.url);
+    const chip = document.createElement(canOpen ? "button" : "span");
+    chip.className = `talacher-match talacher-match-${match.source}`;
+    chip.append(
+      Object.assign(document.createElement("span"), { textContent: [match.firstTitle, match.secondTitle].filter(Boolean).join(" / ") }),
+      Object.assign(document.createElement("small"), { textContent: match.source === "studio" && match.itemType ? `Studio, ${match.itemType}` : sourceLabel })
+    );
+    chip.title = [
+      match.shared?.length ? `Shares: ${match.shared.join(", ")}` : "",
+      match.source === "miro" ? "Show it on the board" : match.source === "monday" ? `Open in monday${match.group ? ` (${match.group})` : ""}` : ""
+    ].filter(Boolean).join("\n");
+
+    if (canOpen) {
+      chip.type = "button";
+      chip.addEventListener("click", () => {
+        if (match.source === "miro") {
+          close();
+          callMiroBridge("TALACHER_MIRO_ZOOM_TO", { itemId: match.id }, 5000).catch(() => {});
+        } else {
+          window.open(match.url, "_blank", "noopener");
+        }
+      });
+    }
+
+    return chip;
+  }
 
   async function readMiroSelection(options = {}) {
     const token = ++captureToken;
@@ -381,8 +593,13 @@ function createMiroSendDialog(getPointerSelection) {
 
     if (miroSnapshot) {
       summary.textContent = describeMiroSnapshot(miroSnapshot);
+      // Scan the board's notes once per opening; the name check reuses it while typing.
+      boardTitlesPromise = callMiroBridge("TALACHER_MIRO_FIND_TITLES", {}, 20000)
+        .then((result) => result.records)
+        .catch(() => null);
       renderNotes(miroSnapshot.notes);
       renderGroupOption(miroSnapshot);
+      applyNoteDetection(miroSnapshot.notes);
 
       if (miroSnapshot.images.length) {
         renderArtStrip(miroSnapshot.images, token);
@@ -563,6 +780,8 @@ function createMiroSendDialog(getPointerSelection) {
     }
 
     const choices = [...notes, { id: "", text: "Don't write on a note", isNone: true }];
+    // Prefer the item spec text ("FirstTitle: ...") as the note that gets the titles.
+    const defaultIndex = Math.max(0, notes.findIndex((note) => note.spec));
 
     for (const [index, note] of choices.entries()) {
       const card = document.createElement("label");
@@ -576,14 +795,20 @@ function createMiroSendDialog(getPointerSelection) {
       radio.type = "radio";
       radio.name = "miroNoteId";
       radio.value = note.id;
-      radio.checked = index === 0;
-      radio.defaultChecked = index === 0;
+      radio.checked = index === defaultIndex;
+      radio.defaultChecked = index === defaultIndex;
 
       const text = document.createElement("span");
       text.className = "talacher-note-text";
 
       if (note.isNone || !note.text) {
         text.textContent = note.isNone ? note.text : "Empty note";
+      } else if (note.spec) {
+        text.append(
+          Object.assign(document.createElement("strong"), { textContent: [note.spec.firstTitle, note.spec.secondTitle].filter(Boolean).join(" / ") }),
+          " (item spec)"
+        );
+        card.title = note.text;
       } else {
         const [firstLine, ...otherLines] = note.text.split("\n");
         text.append(Object.assign(document.createElement("strong"), { textContent: firstLine }));
@@ -603,11 +828,16 @@ function createMiroSendDialog(getPointerSelection) {
         useText.textContent = "Use as titles";
         useText.title = "Fill First title and Second title from this note";
         useText.addEventListener("click", () => {
-          const [first, ...rest] = note.text.split("\n").map((line) => line.trim()).filter(Boolean);
-          firstTitle.value = first || "";
-          secondTitle.value = rest.join(" ");
+          const titles = note.spec
+            ? { first: note.spec.firstTitle || "", second: note.spec.secondTitle || "" }
+            : titlesFromNoteText(note.text);
+          firstTitle.value = titles.first;
+          secondTitle.value = titles.second;
+          titlesSource.hidden = false;
+          titlesSource.textContent = note.spec ? "from item spec" : "from note";
           radio.checked = true;
           firstTitle.focus();
+          scheduleTitleChecks();
         });
         card.append(useText);
       }
@@ -647,6 +877,41 @@ function createMiroSendDialog(getPointerSelection) {
   });
 
   recaptureButton.addEventListener("click", () => readMiroSelection());
+  dialog.querySelector("[data-talacher-ai-open]").addEventListener("click", openNamingModal);
+
+  function openNamingModal() {
+    const snapshot = miroSnapshot;
+    const images = snapshot?.images?.length
+      ? snapshot.images.map((image) => ({
+        id: image.id,
+        label: image.title || "Miro image",
+        previewUrl: getMiroPreview(image.id),
+        checked: activeSelection?.itemId ? activeSelection.itemId === image.id : image === snapshot.images[0],
+        loadDataUrl: async () => {
+          if (activeSelection?.itemId === image.id && activeSelection.dataUrl) {
+            return activeSelection.dataUrl;
+          }
+
+          const data = await callMiroBridge("TALACHER_MIRO_GET_IMAGE_DATA", { itemId: image.id, format: "original" }, 45000);
+          return data.dataUrl;
+        }
+      }))
+      : activeSelection?.previewUrl
+        ? [{
+          id: "selection",
+          label: activeSelection.fileName || "Selected image",
+          previewUrl: activeSelection.previewUrl,
+          checked: true,
+          loadDataUrl: async () => activeSelection.dataUrl || urlToDataUrl(activeSelection.previewUrl)
+        }]
+        : [];
+
+    namingModal.open({
+      images: images.slice(0, 12),
+      notes: (snapshot?.notes || []).filter((note) => note.text).map((note) => ({ id: note.id, text: note.text, checked: true })),
+      itemTypeHint: mapAssetLabelToItemType(pickers.assetType.value)
+    });
+  }
   form.elements.groupOnBoard.addEventListener("change", () => {
     chrome.storage.local.set({ talacherGroupOnBoard: form.elements.groupOnBoard.checked }).catch(() => {});
     form.elements.groupOnBoard.defaultChecked = form.elements.groupOnBoard.checked;
@@ -692,7 +957,8 @@ function createMiroSendDialog(getPointerSelection) {
       selection: activeSelection,
       isDevSuccess,
       noteUpdate,
-      groupItemIds: groupOnBoard && snapshot && !form.elements.groupOnBoard.disabled ? snapshot.itemIds : null
+      groupItemIds: groupOnBoard && snapshot && !form.elements.groupOnBoard.disabled ? snapshot.itemIds : null,
+      noteItemId: snapshot && miroNoteId ? miroNoteId : null
     });
 
     flyPreviewToQueue(previewImage, flightSource, job.element.querySelector("[data-talacher-queue-thumb]"));
@@ -718,6 +984,7 @@ function createMiroSendDialog(getPointerSelection) {
 
   return {
     element: dialog,
+    namingElement: namingModal.element,
     queueElement: uploadQueue.element,
     toastElement: toast,
     saveReadyTag,
@@ -887,7 +1154,7 @@ function createMiroUploadQueue(showToast) {
     refreshQueue();
   });
 
-  function addJob({ payload, selection, isDevSuccess, noteUpdate, groupItemIds = null }) {
+  function addJob({ payload, selection, isDevSuccess, noteUpdate, groupItemIds = null, noteItemId = null }) {
     const id = crypto.randomUUID ? crypto.randomUUID() : `talacher-job-${Date.now()}-${jobs.size}`;
     const requestId = crypto.randomUUID ? crypto.randomUUID() : `talacher-request-${Date.now()}-${jobs.size}`;
     const previewUrl = selection?.previewUrl || selection?.dataUrl || selection?.sourceUrl || "";
@@ -932,6 +1199,7 @@ function createMiroUploadQueue(showToast) {
       noteUpdate,
       noteResult: null,
       groupItemIds,
+      noteItemId,
       cancelled: false,
       status: "queued",
       element,
@@ -1014,8 +1282,14 @@ function createMiroUploadQueue(showToast) {
         .then((result) => ({ ok: result.grouped, ...result }))
         .catch((error) => ({ ok: false, error: error.message }))
       : null;
+    // Recolor the note only now that the row exists, so its color means "sent to monday".
+    const { talacherNoteColor = "purple" } = await chrome.storage.local.get("talacherNoteColor").catch(() => ({}));
+    const colorResult = job.noteItemId && talacherNoteColor !== "none"
+      ? await callMiroBridge("TALACHER_MIRO_STYLE_NOTE", { itemId: job.noteItemId, color: talacherNoteColor }, 4000)
+        .catch((error) => ({ styled: false, error: error.message }))
+      : null;
 
-    return { readyTagCopied, noteResult, groupResult };
+    return { readyTagCopied, noteResult, groupResult, colorResult };
   }
 
   async function resolveQueueNoteUpdate(job) {
@@ -1082,7 +1356,7 @@ function formatQueueTitle(payload) {
     .join(" ") || "Untitled item";
 }
 
-function buildQueueDoneLabel(itemName, { readyTagCopied, noteResult, groupResult }) {
+function buildQueueDoneLabel(itemName, { readyTagCopied, noteResult, groupResult, colorResult }) {
   const details = [];
 
   if (readyTagCopied) {
@@ -1095,6 +1369,10 @@ function buildQueueDoneLabel(itemName, { readyTagCopied, noteResult, groupResult
 
   if (groupResult?.ok) {
     details.push("grouped on board");
+  }
+
+  if (colorResult?.styled) {
+    details.push("note recolored");
   }
 
   return details.length ? `Done: ${itemName} (${details.join(", ")})` : `Done: ${itemName}`;
@@ -1114,7 +1392,7 @@ function isMissingMiroNoteError(error) {
   return /no selected miro sticky note|no selected.*text item/i.test(String(error || ""));
 }
 
-function buildSuccessToast(baseMessage, { readyTagCopied, noteResult, groupResult }) {
+function buildSuccessToast(baseMessage, { readyTagCopied, noteResult, groupResult, colorResult }) {
   const parts = [baseMessage];
 
   if (readyTagCopied) {
@@ -1125,6 +1403,10 @@ function buildSuccessToast(baseMessage, { readyTagCopied, noteResult, groupResul
     parts.push("Miro note updated.");
   } else if (noteResult?.error && !noteResult.skipped) {
     parts.push(`Miro note not updated: ${noteResult.error}`);
+  }
+
+  if (colorResult?.styled) {
+    parts.push("Note recolored.");
   }
 
   if (groupResult?.ok) {
@@ -1139,35 +1421,18 @@ function buildSuccessToast(baseMessage, { readyTagCopied, noteResult, groupResul
 }
 
 function updateMiroNote(payload, itemId = null) {
-  const noteText = [payload.firstTitle, payload.secondTitle]
-    .map((value) => value?.trim())
-    .filter(Boolean)
-    .join("\n");
+  const firstTitle = payload.firstTitle?.trim() || "";
+  const secondTitle = payload.secondTitle?.trim() || "";
 
-  if (!noteText) {
+  if (!firstTitle && !secondTitle) {
     return Promise.resolve({ ok: false, error: "No title text to write." });
   }
 
-  const contentHtml = noteText
-    .split("\n")
-    .map(escapeHtml)
-    .map((line) => `<p>${line}</p>`)
-    .join("");
-
-  // Without an itemId the bridge falls back to the first selected note.
-  return callMiroBridge("TALACHER_MIRO_UPDATE_NOTE", { itemId, contentHtml }, 4000)
+  // The bridge rewrites only the title lines of item spec text and escapes the values.
+  // Without an itemId it falls back to the first selected note.
+  return callMiroBridge("TALACHER_MIRO_UPDATE_NOTE", { itemId, firstTitle, secondTitle }, 4000)
     .then((result) => ({ ok: true, ...result }))
     .catch((error) => ({ ok: false, error: error.message }));
-}
-
-function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;"
-  })[character]);
 }
 
 async function copyReadyTagToClipboard() {
@@ -1252,6 +1517,15 @@ async function readyTagFromSelection(selection) {
   } catch {
     return null;
   }
+}
+
+async function urlToDataUrl(url) {
+  if (!url || url.startsWith("data:")) {
+    return url || null;
+  }
+
+  const response = await fetch(url);
+  return blobToDataUrl(await response.blob());
 }
 
 function blobToDataUrl(blob) {
@@ -1556,6 +1830,129 @@ function sendTalacherMessage(message) {
       resolve(response.result);
     });
   });
+}
+
+async function loadMondayArtists(picker) {
+  try {
+    const artists = await sendTalacherMessage({ type: "TALACHER_GET_ARTISTS" });
+    picker.setOptions(artists.map((artist) => ({ value: artist.id, label: artist.name, avatar: artist.photo, person: true })), {
+      defaultValue: ""
+    });
+  } catch {
+    // Artist stays "Unassigned" when monday users can't be loaded.
+  }
+}
+
+let talacherNamingIndexPromise = null;
+
+// Existing Studio titles (from naming-data/items.json via the background worker).
+function loadNamingIndex() {
+  talacherNamingIndexPromise ??= sendTalacherMessage({ type: "TALACHER_GET_NAMING_INDEX" }).catch(() => {
+    talacherNamingIndexPromise = null;
+    return [];
+  });
+  return talacherNamingIndexPromise;
+}
+
+// "Jolly Roger\nFlag/Cape that moves" -> first line / remaining lines.
+function titlesFromNoteText(text) {
+  const [first = "", ...rest] = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return { first, second: rest.join(" ") };
+}
+
+// Keyword -> Studio ItemType, checked longest phrase first. "@Label" maps straight to a monday Asset Type.
+const TALACHER_TYPE_KEYWORDS = [
+  ["hand warmer", "Waist"], ["team dance", "TeamDance"], ["arm brace", "ArmAccessory"], ["arm band", "ArmAccessory"],
+  ["fanny pack", "Front"], ["puffer vest", "Front"], ["buzz cut", "Hair"], ["crop top", "Shirt"], ["end zone", "EndzoneEffect"],
+  ["leg sleeve", "LegAccessory"], ["shoulder pads", "Shoulder"], ["trade booth", "@TRADE BOOTH"], ["face mask", "Helmet"],
+  ["visor", "Visor"], ["beanie", "Hat"], ["9fifty", "Hat"], ["snapback", "Hat"], ["cap", "Hat"], ["hat", "Hat"], ["crown", "Hat"],
+  ["commando", "Hat"], ["beret", "Hat"], ["guitar", "Back"], ["jetpack", "Back"], ["shield", "Back"], ["backpack", "Back"],
+  ["skateboard", "Back"], ["snowboard", "Back"], ["wings", "Back"], ["staff", "Back"], ["cape", "Back"], ["cloak", "Back"],
+  ["speaker", "Back"], ["trophy", "Back"], ["sword", "Back"], ["banner", "Back"], ["flag", "Back"], ["hoodie", "Shirt"], ["tee", "Shirt"],
+  ["top", "Shirt"], ["jacket", "Shirt"], ["shirt", "Shirt"], ["jersey", "Shirt"], ["sweater", "Shirt"], ["robe", "Shirt"],
+  ["bottoms", "Pants"], ["bottom", "Pants"], ["pants", "Pants"], ["shorts", "Pants"], ["joggers", "Pants"],
+  ["cleats", "Cleat"], ["cleat", "Cleat"], ["sneakers", "Cleat"], ["shoes", "Cleat"], ["sandals", "Cleat"], ["boots", "Cleat"],
+  ["gloves", "Glove"], ["glove", "Glove"], ["mouthguard", "Mouthpiece"], ["mouthpiece", "Mouthpiece"], ["grillz", "Mouthpiece"],
+  ["backplate", "Backplate"], ["hair", "Hair"], ["afro", "Hair"], ["braids", "Hair"], ["dreads", "Hair"], ["mohawk", "Hair"],
+  ["facemask", "Helmet"], ["2bar", "Helmet"], ["chain", "Neck"], ["necklace", "Neck"], ["cuban", "Neck"], ["pendant", "Neck"],
+  ["shell", "Shell"], ["football", "FBTexture"], ["trail", "FBTrail"], ["sleeve", "ArmAccessory"], ["vest", "Front"],
+  ["watch", "Hand"], ["bracelet", "Hand"], ["ring", "Hand"], ["beard", "Facial"], ["glasses", "Facial"], ["shades", "Facial"],
+  ["sunglasses", "Facial"], ["goggles", "Facial"], ["mask", "Facial"], ["shiesty", "Facial"], ["mustache", "Facial"],
+  ["emoji", "Emoji"], ["emote", "Animation"], ["dance", "Animation"], ["celebration", "Animation"], ["animation", "Animation"],
+  ["socks", "Sock"], ["sock", "Sock"], ["endzone", "EndzoneEffect"], ["undershirt", "Undershirt"], ["shoulder", "Shoulder"],
+  ["headband", "HeadAccessory"], ["halo", "HeadAccessory"], ["horns", "HeadAccessory"], ["costume", "@Costume"]
+].sort((a, b) => b[0].length - a[0].length);
+
+// Picks an item type from the item spec, else from keywords in the titles/notes (earlier texts win).
+function detectItemType({ specType, texts }) {
+  if (specType) {
+    const known = TALACHER_NAMING_ITEM_TYPES.find((type) => normalizePickerText(type).replace(/\s+/g, "") === normalizePickerText(specType).replace(/\s+/g, ""));
+
+    if (known) {
+      return { itemType: known, keyword: null };
+    }
+  }
+
+  for (const text of texts) {
+    const haystack = ` ${normalizePickerText(text)} `;
+
+    if (haystack.trim()) {
+      for (const [keyword, type] of TALACHER_TYPE_KEYWORDS) {
+        if (haystack.includes(` ${keyword} `) || haystack.includes(` ${keyword}s `)) {
+          return type.startsWith("@") ? { assetLabel: type.slice(1), keyword } : { itemType: type, keyword };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Words that don't make a name distinctive (item nouns, colours, filler).
+const TALACHER_COMMON_TITLE_WORDS = new Set([
+  ...TALACHER_TYPE_KEYWORDS.flatMap(([keyword]) => keyword.split(" ")),
+  "the", "of", "a", "an", "and", "n", "with", "nfl", "uf", "item", "new", "2025", "2026", "edition", "set",
+  "red", "blue", "green", "black", "white", "pink", "purple", "orange", "yellow", "gold", "golden", "silver", "gray", "grey",
+  "tinted", "dented", "clear", "faded", "dark", "light", "solid", "hanging"
+]);
+
+function distinctiveTitleWords(...parts) {
+  return new Set(normalizePickerText(parts.join(" ")).split(" ").filter((word) => word.length > 1 && !TALACHER_COMMON_TITLE_WORDS.has(word)));
+}
+
+// Exact First+Second matches, plus names that share distinctive words.
+function compareItemTitles({ first, second }, records) {
+  const key = `${normalizePickerText(first)}|${normalizePickerText(second)}`;
+  const targetWords = distinctiveTitleWords(first, second);
+  const exact = [];
+  const similar = [];
+  const seen = new Set();
+
+  for (const record of records) {
+    const recordKey = `${normalizePickerText(record.firstTitle)}|${normalizePickerText(record.secondTitle)}`;
+    const dedupeKey = `${record.source}|${recordKey}`;
+
+    if (seen.has(dedupeKey) || recordKey === "|") {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+
+    if (recordKey === key || record.exact) {
+      exact.push(record);
+      continue;
+    }
+
+    const words = distinctiveTitleWords(record.firstTitle, record.secondTitle);
+    const shared = [...targetWords].filter((word) => words.has(word));
+
+    if (shared.length) {
+      similar.push({ ...record, shared, score: shared.length / new Set([...targetWords, ...words]).size });
+    }
+  }
+
+  similar.sort((a, b) => b.score - a.score);
+  return { exact, similar: similar.slice(0, 6) };
 }
 
 async function loadMondayGroups(picker) {

@@ -167,6 +167,79 @@ async function saveImmediateStatusPreview() {
   immediateStatusPreviewStatus.textContent = `Immediate status preview is ${value ? "on" : "off"}.`;
 }
 
+const aiProviderInput = document.getElementById("aiProvider");
+const aiKeyLabel = document.getElementById("aiKeyLabel");
+const aiKeyInput = document.getElementById("aiKey");
+const aiModelInput = document.getElementById("aiModel");
+const saveAiButton = document.getElementById("saveAi");
+const aiStatus = document.getElementById("aiStatus");
+let aiSettings = null;
+
+function providerLabel(provider) {
+  return provider === "groq" ? "Groq" : "Gemini";
+}
+
+function renderAiSettings(provider = aiSettings?.provider || "gemini") {
+  aiProviderInput.value = provider;
+  aiKeyLabel.textContent = `${providerLabel(provider)} API key`;
+  aiKeyInput.placeholder = aiSettings?.configured?.[provider] ? "Saved. Paste a new key to replace it" : "Paste key";
+  aiModelInput.value = aiSettings?.models?.[provider] || "";
+
+  if (!aiSettings) {
+    return;
+  }
+
+  const examples = aiSettings.catalogSize
+    ? `Learns from ${aiSettings.catalogSize} existing items.`
+    : "No item examples found; run npm run export-titles.";
+  aiStatus.textContent = aiSettings.configured[provider]
+    ? `${providerLabel(provider)} key saved. ${examples}`
+    : `No ${providerLabel(provider)} key yet. ${examples}`;
+}
+
+async function loadAiSettings() {
+  try {
+    aiSettings = await sendMessage({ type: "TALACHER_AI_GET_SETTINGS" });
+    renderAiSettings();
+  } catch (error) {
+    aiStatus.textContent = error.message;
+  }
+}
+
+async function saveAiSettings() {
+  saveAiButton.disabled = true;
+
+  try {
+    aiSettings = await sendMessage({
+      type: "TALACHER_AI_SAVE_SETTINGS",
+      settings: { provider: aiProviderInput.value, apiKey: aiKeyInput.value, model: aiModelInput.value }
+    });
+    aiKeyInput.value = "";
+    renderAiSettings();
+  } catch (error) {
+    aiStatus.textContent = error.message;
+  } finally {
+    saveAiButton.disabled = false;
+  }
+}
+
+const noteColorInput = document.getElementById("noteColor");
+const noteColorStatus = document.getElementById("noteColorStatus");
+
+chrome.storage.local.get("talacherNoteColor").then(({ talacherNoteColor }) => {
+  noteColorInput.value = talacherNoteColor || "purple";
+});
+noteColorInput.addEventListener("change", async () => {
+  await chrome.storage.local.set({ talacherNoteColor: noteColorInput.value });
+  noteColorStatus.textContent = noteColorInput.value === "none"
+    ? "Notes keep their color after sending."
+    : `Saved. Notes turn ${noteColorInput.selectedOptions[0].textContent.toLowerCase()} once the row is created.`;
+});
+
+aiProviderInput.addEventListener("change", () => renderAiSettings(aiProviderInput.value));
+saveAiButton.addEventListener("click", saveAiSettings);
+loadAiSettings();
+
 function formatPreviewImageMode(value) {
   return value === "monday-fetch" ? "Monday Fetch" : "Legacy";
 }

@@ -1,3 +1,5 @@
+importScripts("ai-naming.js");
+
 const DEV_SERVER_URL = "http://127.0.0.1:17321/version";
 const POLL_INTERVAL_MS = 1000;
 const MONDAY_API_URL = "https://api.monday.com/v2";
@@ -13,7 +15,8 @@ const DEFAULT_MONDAY_CONFIG = {
     status: "status",
     assetType: "color_mktbqa5b",
     rarity: "color_mm1y1nam",
-    imageRefLink: "text_mm63k2nn"
+    imageRefLink: "text_mm63k2nn",
+    artist: "person"
   }
 };
 
@@ -189,6 +192,42 @@ async function handleTalacherMessage(message) {
     return fetchBoardSchema();
   }
 
+  if (message.type === "TALACHER_GET_ARTISTS") {
+    return getMondayArtists();
+  }
+
+  if (message.type === "TALACHER_FIND_MONDAY_TITLES") {
+    return findMondayItemsByTitle(message.titles || {});
+  }
+
+  if (message.type === "TALACHER_GET_NAMING_INDEX") {
+    return (await loadNamingCatalog()).map((item) => ({ firstTitle: item.firstTitle, secondTitle: item.secondTitle, itemType: item.itemType }));
+  }
+
+  if (message.type === "TALACHER_AI_SUGGEST_NAMES") {
+    return suggestItemNames(message.request || {});
+  }
+
+  if (message.type === "TALACHER_AI_GET_SETTINGS") {
+    return getNamingSettings();
+  }
+
+  if (message.type === "TALACHER_AI_SAVE_SETTINGS") {
+    return saveNamingSettings(message.settings || {});
+  }
+
+  if (message.type === "TALACHER_AI_GET_HISTORY") {
+    return getNamingHistory();
+  }
+
+  if (message.type === "TALACHER_AI_MARK_USED") {
+    return markNamingSuggestionUsed(message.used || {});
+  }
+
+  if (message.type === "TALACHER_AI_DELETE_HISTORY") {
+    return deleteNamingHistory(message.target || {});
+  }
+
   if (message.type === "TALACHER_GET_GROUPS") {
     return getMondayGroups();
   }
@@ -322,6 +361,67 @@ async function fetchBoardSchema() {
 
 // Groups for the send dialog: refreshed from monday every few minutes so new groups (e.g. a new
 // season) appear without pressing "Fetch board"; falls back to the stored list when offline.
+// People who can be set as the row's Artist: the board's subscribers (falls back to all
+// non-guest users), cached for 30 minutes.
+async function getMondayArtists() {
+  const { mondayArtists } = await chrome.storage.local.get("mondayArtists");
+
+  if (mondayArtists && Date.now() - mondayArtists.fetchedAt < 30 * 60 * 1000) {
+    return mondayArtists.users;
+  }
+
+  const settings = await getSettings();
+  const data = await mondayRequest(`
+    query TalacherArtists($boardId: [ID!]) {
+      boards(ids: $boardId) { subscribers { id name photo_thumb_small enabled is_guest } }
+    }
+  `, { boardId: [settings.config.boardId] });
+  let users = data.boards?.[0]?.subscribers || [];
+
+  if (users.length < 2) {
+    const all = await mondayRequest(`
+      query TalacherAllUsers { users(kind: non_guests, limit: 1000) { id name photo_thumb_small enabled is_guest } }
+    `, {});
+    users = all.users || [];
+  }
+
+  const artists = users
+    .filter((user) => user.enabled !== false && !user.is_guest)
+    .map((user) => ({ id: String(user.id), name: user.name, photo: user.photo_thumb_small || null }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  await chrome.storage.local.set({ mondayArtists: { fetchedAt: Date.now(), users: artists } });
+  return artists;
+}
+
+// Rows on the board whose First title matches exactly, flagged when the Second Title matches too.
+async function findMondayItemsByTitle({ firstTitle, secondTitle }) {
+  const first = String(firstTitle || "").trim();
+
+  if (!first) {
+    return [];
+  }
+
+  const settings = await getSettings();
+  const data = await mondayRequest(`
+    query TalacherFindTitles($boardId: ID!, $values: [String]!, $secondTitleColumn: [String!]) {
+      items_page_by_column_values(board_id: $boardId, limit: 25, columns: [{ column_id: "name", column_values: $values }]) {
+        items { id name url group { title } column_values(ids: $secondTitleColumn) { text } }
+      }
+    }
+  `, { boardId: settings.config.boardId, values: [first], secondTitleColumn: [settings.config.columns.secondTitle] });
+  const normalize = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+  return (data.items_page_by_column_values?.items || []).map((item) => ({
+    id: item.id,
+    firstTitle: item.name,
+    secondTitle: item.column_values?.[0]?.text || "",
+    group: item.group?.title || "",
+    url: item.url,
+    exact: normalize(item.column_values?.[0]?.text) === normalize(secondTitle)
+  }));
+}
+
 async function getMondayGroups() {
   const settings = await getSettings();
   const { mondayGroupsFetchedAt } = await chrome.storage.local.get("mondayGroupsFetchedAt");
@@ -390,6 +490,11 @@ async function createMondayItemWithSignal(payload, signal) {
 
   const columnValues = {};
   setTextColumn(columnValues, config.columns.secondTitle, payload.secondTitle);
+
+  if (config.columns.artist && /^\d+$/.test(String(payload.artistId || ""))) {
+    columnValues[config.columns.artist] = { personsAndTeams: [{ id: Number(payload.artistId), kind: "person" }] };
+  }
+
   const statusSelections = await setStatusColumns(columnValues, settings, payload, signal);
 
   const mutation = `

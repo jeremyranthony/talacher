@@ -21,6 +21,35 @@
       </div>
       <p id="settingsStatus" class="dev-status">Token not checked yet.</p>
       <label class="popup-field">
+        <span>Note color after sending</span>
+        <select id="noteColor">
+          <option value="purple">Purple</option>
+          <option value="green">Green</option>
+          <option value="blue">Blue</option>
+          <option value="orange">Orange</option>
+          <option value="gray">Gray</option>
+          <option value="none">Don't change the color</option>
+        </select>
+      </label>
+      <p id="noteColorStatus" class="dev-status">The note that gets the titles turns this color once the row is created.</p>
+      <label class="popup-field">
+        <span>AI for name suggestions</span>
+        <select id="aiProvider">
+          <option value="gemini">Gemini</option>
+          <option value="groq">Groq</option>
+        </select>
+      </label>
+      <label class="popup-field">
+        <span id="aiKeyLabel">Gemini API key</span>
+        <input id="aiKey" type="password" autocomplete="off" placeholder="Paste key">
+      </label>
+      <label class="popup-field">
+        <span>Model</span>
+        <input id="aiModel" type="text" autocomplete="off" spellcheck="false">
+      </label>
+      <button id="saveAi" type="button">Save AI settings</button>
+      <p id="aiStatus" class="dev-status">AI settings not checked yet.</p>
+      <label class="popup-field">
         <span>Preview delay, ms</span>
         <input id="previewDelay" type="number" min="0" max="3000" step="50">
       </label>

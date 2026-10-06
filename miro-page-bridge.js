@@ -11,7 +11,18 @@
     TALACHER_MIRO_GET_SELECTION: getSelectionSnapshot,
     TALACHER_MIRO_GET_IMAGE_DATA: getImageData,
     TALACHER_MIRO_UPDATE_NOTE: updateNote,
-    TALACHER_MIRO_GROUP_ITEMS: groupItems
+    TALACHER_MIRO_STYLE_NOTE: styleNote,
+    TALACHER_MIRO_GROUP_ITEMS: groupItems,
+    TALACHER_MIRO_FIND_TITLES: findTitleRecords,
+    TALACHER_MIRO_ZOOM_TO: zoomTo
+  };
+  // Sticky notes take Miro's named colors; text and shapes take hex fills.
+  const NOTE_COLORS = {
+    purple: { sticky: "violet", fill: "#d6c2f5" },
+    green: { sticky: "light_green", fill: "#c7efd8" },
+    blue: { sticky: "light_blue", fill: "#c9def8" },
+    orange: { sticky: "orange", fill: "#ffd9b3" },
+    gray: { sticky: "gray", fill: "#e6e6e6" }
   };
   const TEXT_ITEM_TYPES = new Set(["sticky_note", "text", "shape"]);
 
@@ -74,12 +85,16 @@
       }));
     const notes = items
       .filter((item) => TEXT_ITEM_TYPES.has(item.type) && typeof item.content === "string")
-      .map((item) => ({
-        id: item.id,
-        type: item.type,
-        text: htmlToText(item.content),
-        color: item.style?.fillColor || null
-      }))
+      .map((item) => {
+        const text = htmlToText(item.content);
+        return {
+          id: item.id,
+          type: item.type,
+          text,
+          color: item.style?.fillColor || null,
+          spec: parseItemSpec(text)
+        };
+      })
       .filter((note) => note.type !== "shape" || note.text);
     const groupIds = [...new Set(items.map((item) => item.groupId).filter(Boolean))];
 
@@ -110,7 +125,7 @@
     };
   }
 
-  async function updateNote({ itemId, contentHtml }) {
+  async function updateNote({ itemId, firstTitle = "", secondTitle = "" }) {
     const board = getBoard();
     const note = itemId
       ? await board.getById(itemId)
@@ -120,9 +135,57 @@
       throw new Error("No selected Miro sticky note or text item was found.");
     }
 
-    note.content = contentHtml;
+    // Item spec text ("FirstTitle: ...") keeps every other field; only the title lines change.
+    note.content = parseItemSpec(htmlToText(note.content))
+      ? patchSpecTitles(note.content, { FirstTitle: firstTitle, SecondTitle: secondTitle })
+      : [firstTitle, secondTitle].filter(Boolean).map((line) => `<p>${escapeHtml(line)}</p>`).join("");
     await note.sync();
     return { itemId: note.id, itemType: note.type };
+  }
+
+  async function styleNote({ itemId, color = "purple" }) {
+    const palette = NOTE_COLORS[color];
+    const note = palette && itemId ? await getBoard().getById(itemId) : null;
+
+    if (!note?.style) {
+      return { styled: false };
+    }
+
+    note.style.fillColor = note.type === "sticky_note" ? palette.sticky : palette.fill;
+    await note.sync();
+    return { styled: true, itemId: note.id };
+  }
+
+  // Every note/text/shape on the board with title-like content, for duplicate and similarity checks.
+  async function findTitleRecords() {
+    const items = await getBoard().get({ type: ["sticky_note", "text", "shape"] });
+    const records = [];
+
+    for (const item of items) {
+      const text = htmlToText(item.content);
+
+      if (!text || text.length > 600) {
+        continue;
+      }
+
+      const spec = parseItemSpec(text);
+      const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+
+      if (spec) {
+        records.push({ id: item.id, type: item.type, isSpec: true, ...spec });
+      } else if (lines.length >= 1 && lines.length <= 3 && lines.every((line) => line.length <= 60)) {
+        records.push({ id: item.id, type: item.type, isSpec: false, firstTitle: lines[0], secondTitle: lines.slice(1).join(" ") });
+      }
+    }
+
+    return { records, scanned: items.length };
+  }
+
+  async function zoomTo({ itemId }) {
+    const board = getBoard();
+    const item = await board.getById(itemId);
+    await board.viewport.zoomTo(item);
+    return { ok: true };
   }
 
   async function groupItems({ itemIds = [] }) {
@@ -146,6 +209,49 @@
 
     const group = await board.group({ items: groupable });
     return { grouped: true, groupId: group.id };
+  }
+
+  // Parses Miro item spec text: "FirstTitle: Short", "SecondTitle = Buzz Cut", "ItemType: Hair"...
+  function parseItemSpec(text) {
+    const fields = {};
+
+    for (const line of String(text || "").split("\n")) {
+      const match = /^\s*(FirstTitle|SecondTitle|ItemType|Rarity|ItemName)\s*[:=]\s*(.*)$/i.exec(line.replace(/\u00a0/g, " "));
+
+      if (match) {
+        const key = match[1].toLowerCase();
+        const value = match[2].trim();
+        fields[{ firsttitle: "firstTitle", secondtitle: "secondTitle", itemtype: "itemType", rarity: "rarity", itemname: "itemName" }[key]] = value;
+      }
+    }
+
+    return "firstTitle" in fields || "secondTitle" in fields ? fields : null;
+  }
+
+  function patchSpecTitles(html, values) {
+    let next = String(html);
+
+    for (const [key, value] of Object.entries(values)) {
+      const pattern = new RegExp(`(${key}\\s*[:=]\\s*)([^<\\n]*)`, "i");
+
+      if (pattern.test(next)) {
+        next = next.replace(pattern, (_match, prefix) => `${prefix}${escapeHtml(value)}`);
+      } else {
+        next = `<p>${key}: ${escapeHtml(value)}</p>${next}`;
+      }
+    }
+
+    return next;
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;"
+    })[character]);
   }
 
   function htmlToText(html) {

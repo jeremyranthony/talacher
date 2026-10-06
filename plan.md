@@ -104,6 +104,21 @@ Current files:
 - "Group the selection on Miro after sending" groups the selected items once the row is created (remembered between sends; disabled when items are already in another group).
 - Group, Priority, Rarity and Asset type use `content-picker.js`: searchable dropdowns showing monday's label and group colors. Groups refresh from monday every 5 minutes.
 
+### Item spec notes, name check, artist
+
+- Miro item specs are text objects in the ItemLogChecker format (`FirstTitle: ...`, `SecondTitle = ...`, `Rarity`, `ItemType`, other fields). When one is selected it fills the titles and Rarity, sets the Asset type, and is the default note for writing titles. Writing titles back only rewrites the FirstTitle/SecondTitle lines; every other field is preserved. Plain sticky notes are still replaced with the two titles.
+- Asset type is auto-detected (spec ItemType first, then keywords in the titles, notes and image title) and shown with an "auto" badge; it stops once the user picks a type themselves.
+- Name check while typing: exact First+Second matches and similar names (shared distinctive words, ignoring item nouns and colours) across all notes/text on the Miro board (scanned once per dialog opening), Studio examples (`naming-data/items.json`), and monday rows with the same First title. Miro matches zoom the board to the item; monday matches open the row.
+- After a successful send, the note that got the titles is recolored (default purple: sticky `violet`, text fill `#d6c2f5`). Configurable in the popup, including "don't change".
+- Artist: picks a monday user (board subscribers, else all non-guest users; cached 30 min) and sets the `person` (Artist) column.
+
+### AI name suggestions
+
+- "Suggest names" in the send dialog opens a window to pick the Miro images (up to 4, or paste/add files) and notes that describe the item, plus an optional item type and hint. The AI returns First/Second title options with an ItemType and a one-line reason; "Use name" fills both titles and the Asset Type.
+- Providers: Gemini (`gemini-2.5-flash`, default) or Groq (`meta-llama/llama-4-scout-17b-16e-instruct`), switchable in the popup with a key per provider. Gemini's free tier may use prompts/images for training; use a billing-enabled key for unreleased art.
+- The prompt is the NFL UF naming guide in `ai-naming.js` plus real title pairs from `naming-data/items.json`. That file is git-ignored (the repo is public and it can contain unreleased items); refresh it from Studio with `npm run export-titles` (read-only, via Studio's built-in MCP server).
+- Suggestions that match an existing First/Second pair are flagged "Already exists". Every request is kept in history (last 100) in `chrome.storage.local`.
+
 ### Phase 2: Miro Selection Capture
 
 - Detect the currently selected Miro image/card. Status: context-menu sends now try Miro Web SDK selected image `getDataUrl("original")` first, so image+note multi-selection uploads only the image. Native `Copy as image` and DOM/nearby-image detection remain as fallbacks.

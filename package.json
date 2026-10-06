@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node dev-server.js"
+    "dev": "node dev-server.js",
+    "export-titles": "node tools/export-studio-titles.js"
   }
 }
